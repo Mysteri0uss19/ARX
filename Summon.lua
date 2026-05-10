@@ -140,7 +140,6 @@ end
 
 local function fireRaidContinueIfVisible()
     if not isRaidContinueVisible() then return false end
-
     if tick() - lastRaidContinueFire >= 1.5 then
         lastRaidContinueFire = tick()
         pcall(function()
@@ -217,6 +216,43 @@ end)
 
 if #RaidList == 0 then
     RaidList = { "Destroyed Nemak", "Red Ribbon Base", "Clan Hideout", "Desert Kingdom" }
+end
+
+-- ============================================================
+--  RAID CONFIG (dynamic — ดึงจาก module, fallback ถ้าไม่มี)
+-- ============================================================
+local RaidConfig = {}
+
+pcall(function()
+    local raidModule = require(
+        ReplicatedStorage
+            :WaitForChild("src")
+            :WaitForChild("common")
+            :WaitForChild("content")
+            :WaitForChild("gamemodes")
+            :WaitForChild("raids")
+    )
+    local content = raidModule and raidModule.raidsContent
+    if content then
+        for raidName, data in pairs(content) do
+            local cfg = data.config or {}
+            RaidConfig[raidName] = {
+                light = cfg.lightEnemy or {},
+                tank  = cfg.tankEnemy  or nil,
+            }
+        end
+    end
+end)
+
+local function ensureRaidConfig(raidName)
+    if RaidConfig[raidName] then return end
+    local fallback = {
+        ["Destroyed Nemak"] = { light = {"Barta", "Jays"},     tank = nil          },
+        ["Red Ribbon Base"]  = { light = {"Plasma"},            tank = nil          },
+        ["Clan Hideout"]     = { light = {"Itochi (Crow)"},     tank = nil          },
+        ["Desert Kingdom"]   = { light = {"Matsui", "Ibiboro"}, tank = "Water Tank" },
+    }
+    RaidConfig[raidName] = fallback[raidName] or { light = {}, tank = nil }
 end
 
 -- ============================================================
@@ -880,39 +916,195 @@ local function getAllRaidEnemies()
     return result
 end
 
--- ============================================================
---  HELPERS — GAUNTLET
--- ============================================================
-local function getCurrentFloor()
-    local function scanLabels(root)
-        for _, obj in ipairs(root:GetDescendants()) do
-            if obj:IsA("TextLabel") then
-                local t = obj.Text or ""
-                local num = t:match("[Ff]loor%s*:?%s*(%d+)")
-                           or t:match("(%d+)%s*[Ff]loor")
-                if num then return tonumber(num) end
+-- ดึง enemy ใน raid โดยชื่อ (nearest match)
+local function findRaidEnemyByName(name)
+    local worldEnemies = Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Enemies")
+    if not worldEnemies then return nil end
+    local char  = player.Character
+    local hrp   = char and char:FindFirstChild("HumanoidRootPart")
+    local myPos = hrp and hrp.Position or Vector3.zero
+    local targetName = name:lower()
+    local best, bestDist = nil, math.huge
+    for _, e in ipairs(worldEnemies:GetChildren()) do
+        if e:GetAttribute("dead") == true then continue end
+        local cf = getEnemyCFrame(e)
+        if not cf then continue end
+        local dist = (cf.Position - myPos).Magnitude
+        if dist > RAID_MAX_RANGE then continue end
+        local matched = false
+        if e.Name == name or e.Name:lower():find(targetName, 1, true) then
+            matched = true
+        else
+            local ui = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
+            if ui then
+                local frame = ui:FindFirstChild("Frame")
+                local lbl   = frame and frame:FindFirstChild("TextLabel")
+                if lbl and (lbl.Text == name or lbl.Text:lower():find(targetName, 1, true)) then
+                    matched = true
+                end
+            end
+        end
+        if matched and dist < bestDist then
+            bestDist = dist
+            best = e
+        end
+    end
+    return best
+end
+
+-- เลือก target ตาม priority: light → tank → boss (ใช้ RaidConfig ที่ดึงจาก module)
+local function pickRaidTarget(raidName)
+    ensureRaidConfig(raidName)
+    local cfg      = RaidConfig[raidName]
+    local nearbyAll = getAllRaidEnemies()
+
+    local function findNearbyByName(name)
+        local targetName = name:lower()
+        for _, e in ipairs(nearbyAll) do
+            if e.Name == name or e.Name:lower():find(targetName, 1, true) then return e end
+            local ui = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
+            if ui then
+                local frame = ui:FindFirstChild("Frame")
+                local lbl   = frame and frame:FindFirstChild("TextLabel")
+                if lbl and (lbl.Text == name or lbl.Text:lower():find(targetName, 1, true)) then return e end
             end
         end
         return nil
     end
-    for _, gui in ipairs(PlayerGui:GetChildren()) do
-        local n = scanLabels(gui)
-        if n then return n end
+
+    -- 1. light enemy ก่อน
+    for _, lightName in ipairs(cfg.light) do
+        local e = findNearbyByName(lightName)
+        if e then return e, "light" end
     end
-    local ok1, n1 = pcall(function()
-        for _, gui in ipairs(CoreGui:GetChildren()) do
-            local n = scanLabels(gui)
-            if n then return n end
+    -- 2. tank ถ้ามี
+    if cfg.tank then
+        local e = findNearbyByName(cfg.tank)
+        if e then return e, "tank" end
+    end
+    -- 3. boss / อะไรก็ได้ที่เหลือ
+    if nearbyAll[1] then return nearbyAll[1], "boss" end
+    return nil, nil
+end
+
+-- Generic raid loop — ใช้ pickRaidTarget และคง fireRaidContinueIfVisible ของ Doc1
+local function runGenericRaid(raidName, isActiveFunc)
+    ensureRaidConfig(raidName)
+    local cfg          = RaidConfig[raidName]
+    local raidStart    = tick()
+    local noEnemyTimer = 0
+    local lastPhase    = nil
+
+    local lightStr = table.concat(cfg.light, ", ")
+    local tankStr  = cfg.tank and (" → " .. cfg.tank) or ""
+    WindUI:Notify({
+        Title    = string.format("[%s] Started", raidName),
+        Content  = (#cfg.light > 0)
+                   and string.format("Priority: %s%s → Boss", lightStr, tankStr)
+                   or  "No light enemy — going straight to boss",
+        Duration = 5,
+    })
+
+    while isActiveFunc() do
+        -- ตรวจ continue button (Doc1)
+        if fireRaidContinueIfVisible() then break end
+
+        if tick() - raidStart > 900 then
+            WindUI:Notify({
+                Title    = string.format("[%s] Timed Out", raidName),
+                Content  = "15 min limit. Moving on.",
+                Duration = 4,
+            })
+            break
         end
-        return nil
-    end)
-    if ok1 and n1 then return n1 end
-    local ok2, n2 = pcall(function()
-        local map = Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Map")
-        if map then return scanLabels(map) end
-        return nil
-    end)
-    if ok2 and n2 then return n2 end
+
+        local target, targetType = pickRaidTarget(raidName)
+
+        if not target then
+            noEnemyTimer += 0.3
+            if noEnemyTimer >= 10 then
+                WindUI:Notify({
+                    Title    = string.format("[%s] Complete!", raidName),
+                    Content  = "All enemies cleared!",
+                    Duration = 4,
+                })
+                break
+            end
+            task.wait(0.3)
+            continue
+        end
+
+        noEnemyTimer = 0
+
+        if targetType ~= lastPhase then
+            lastPhase = targetType
+            local msg = ({
+                light = "Clearing light enemies first...",
+                tank  = "Attacking tank enemy...",
+                boss  = "All light/tank cleared — engaging boss!",
+            })[targetType] or ""
+            WindUI:Notify({ Title = string.format("[%s]", raidName), Content = msg, Duration = 3 })
+        end
+
+        local attackTimeout = (targetType == "light") and 5
+                           or (targetType == "tank")  and 8
+                           or 20
+
+        local tStart         = tick()
+        local lastAttackTick = 0
+
+        while isActiveFunc() do
+            if fireRaidContinueIfVisible() then break end
+            if tick() - tStart > attackTimeout then break end
+            if not target or not target.Parent then break end
+            if target:GetAttribute("dead") == true then break end
+
+            -- ถ้ากำลังตี tank/boss แต่ยังมี light อยู่ → กลับไปตี light ก่อน
+            if targetType ~= "light" and #cfg.light > 0 then
+                local hasLight = false
+                for _, ln in ipairs(cfg.light) do
+                    if findRaidEnemyByName(ln) then hasLight = true break end
+                end
+                if hasLight then break end
+            end
+
+            local char    = player.Character
+            local hrp     = char and char:FindFirstChild("HumanoidRootPart")
+            local myUnits = getMyUnits()
+            local tPos    = getEnemyCFrame(target)
+
+            if tPos and hrp then
+                local dist = (hrp.Position - tPos.Position).Magnitude
+                if dist <= RAID_MAX_RANGE then
+                    if dist > 20 then
+                        hrp.CFrame = tPos * CFrame.new(0, 5, 0)
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                    end
+                    if tick() - lastAttackTick >= 0.15 then
+                        lastAttackTick = tick()
+                        teleportUnitsTo(tPos)
+                        pcall(function() SendUnitRemote:FireServer(target.Name, myUnits) end)
+                    end
+                end
+            end
+            task.wait(0.08)
+        end
+    end
+end
+
+-- ============================================================
+--  HELPERS — GAUNTLET
+-- ============================================================
+local function getCurrentFloor()
+    for _, v in ipairs(game:GetDescendants()) do
+        if v:IsA("TextLabel") then
+            local text = tostring(v.Text or "")
+            if text:find("Floor") then
+                local floor = text:match("Floor%s*(%d+)")
+                if floor then return tonumber(floor) end
+            end
+        end
+    end
     return 0
 end
 
@@ -1033,7 +1225,6 @@ local function teleportAndInteractCards(cardsObj)
     end
 end
 
-
 local function pickBestCard(availableCards)
     for _, priority in ipairs(cardPriorityList) do
         if priority and priority ~= "" then
@@ -1049,7 +1240,6 @@ local function pickBestCard(availableCards)
     return availableCards[1] and availableCards[1].fullName or nil
 end
 
-
 local function doCardSelection()
     if isCardSelecting then return end
     isCardSelecting = true
@@ -1064,7 +1254,6 @@ local function doCardSelection()
     pcall(function() GauntletCardsRemote:FireServer() end)
     task.wait(1.5)
 
-
     local function getBaseName(text)
         return (text:gsub("%s+[IVX]+$", ""))
     end
@@ -1075,7 +1264,7 @@ local function doCardSelection()
         for _, gui in ipairs(PlayerGui:GetChildren()) do
             for _, label in ipairs(gui:GetDescendants()) do
                 if label:IsA("TextLabel") or label:IsA("TextButton") then
-                    local t = (label.Text or ""):match("^%s*(.-)%s*$") 
+                    local t = (label.Text or ""):match("^%s*(.-)%s*$")
                     if t ~= "" and not seenFull[t] then
                         local base = getBaseName(t)
                         for _, cardName in ipairs(ALL_CARDS) do
@@ -1771,253 +1960,9 @@ RaidTab:Toggle({
                         SetStateRemote:FireServer("attack", true)
                         SetStateRemote:FireServer("clicker", true)
                     end)
-                    WindUI:Notify({ Title = string.format("[%s] Fighting", raidName), Content = "Clearing enemies in raid...", Duration = 3 })
 
-                    local function attackRaidTarget(target, timeout, attackInterval)
-                        timeout = timeout or 30
-                        attackInterval = attackInterval or 0.2
-                        local startT         = tick()
-                        local lastAttackTick = 0
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - startT > timeout then break end
-                            if not target or not target.Parent then break end
-                            if target:GetAttribute("dead") == true then break end
-
-                            local char    = player.Character
-                            local hrp     = char and char:FindFirstChild("HumanoidRootPart")
-                            local myUnits = getMyUnits()
-                            local tPos    = getEnemyCFrame(target)
-
-                            if tPos and hrp then
-                                local dist = (hrp.Position - tPos.Position).Magnitude
-
-                                if dist > RAID_MAX_RANGE then
-                                    task.wait(0.1)
-                                    continue
-                                end
-
-                                if dist > 100 then
-                                    hrp.CFrame = tPos * CFrame.new(0, 5, 0)
-                                    hrp.AssemblyLinearVelocity = Vector3.zero
-                                end
-
-                                if tick() - lastAttackTick >= attackInterval then
-                                    lastAttackTick = tick()
-                                    teleportUnitsTo(tPos)
-                                    pcall(function() SendUnitRemote:FireServer(target.Name, myUnits) end)
-                                end
-                            end
-                            task.wait(math.min(0.1, attackInterval))
-                        end
-                    end
-
-                    local function findRaidEnemyByName(name)
-                        local worldEnemies = Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Enemies")
-                        if not worldEnemies then return nil end
-                        local targetName = name:lower()
-                        for _, e in ipairs(worldEnemies:GetChildren()) do
-                            if e:GetAttribute("dead") == true then continue end
-                            if e.Name == name or e.Name:lower():find(targetName, 1, true) then return e end
-                            local ui = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
-                            if ui then
-                                local frame = ui:FindFirstChild("Frame")
-                                local lbl   = frame and frame:FindFirstChild("TextLabel")
-                                if lbl and (lbl.Text == name or lbl.Text:lower():find(targetName, 1, true)) then return e end
-                            end
-                        end
-                        return nil
-                    end
-
-                    local raidStart    = tick()
-                    local noEnemyTimer = 0
-
-                    if raidName == "Red Ribbon Base" then
-                        WindUI:Notify({ Title = "[Red Ribbon Base]", Content = "Priority: clear Plasma mobs first!", Duration = 4 })
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - raidStart > 900 then
-                                WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit. Moving on.", Duration = 4 })
-                                break
-                            end
-                            local plasma = findRaidEnemyByName("Plasma")
-                            if plasma then
-                                noEnemyTimer = 0
-                                attackRaidTarget(plasma, 2, 0.05)
-                                task.wait(0.05)
-                                continue
-                            end
-                            local boss = findRaidEnemyByName("Cel (Prime)") or findRaidEnemyByName("Super Cel (Prime)")
-                                      or findRaidEnemyByName("Android 20") or findRaidEnemyByName("Android 19")
-                            if not boss then local all = getAllRaidEnemies() boss = all[1] end
-                            if boss then
-                                noEnemyTimer = 0
-                                local checkEnd = tick() + 0.7
-                                while isAutoRaid and tick() < checkEnd do
-                                    if fireRaidContinueIfVisible() then break end
-                                    if boss:GetAttribute("dead") == true or not boss.Parent then break end
-                                    if findRaidEnemyByName("Plasma") then break end
-                                    local char    = player.Character
-                                    local hrp     = char and char:FindFirstChild("HumanoidRootPart")
-                                    local myUnits = getMyUnits()
-                                    local tPos    = getEnemyCFrame(boss)
-                                    if tPos and hrp then
-                                        local dist = (hrp.Position - tPos.Position).Magnitude
-                                        if dist <= RAID_MAX_RANGE then
-                                            if dist > 8 then
-                                                hrp.CFrame = tPos * CFrame.new(0, 5, 0)
-                                                hrp.AssemblyLinearVelocity = Vector3.zero
-                                            end
-                                            teleportUnitsTo(tPos)
-                                            pcall(function() SendUnitRemote:FireServer(boss.Name, myUnits) end)
-                                        end
-                                    end
-                                    task.wait(0.08)
-                                end
-                            else
-                                noEnemyTimer += 0.2
-                                if noEnemyTimer >= 12 then
-                                    WindUI:Notify({ Title = "[Red Ribbon Base] Complete!", Content = "All cleared!", Duration = 4 })
-                                    break
-                                end
-                                task.wait(0.2)
-                            end
-                        end
-
-                    elseif raidName == "Desert Kingdom" then
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - raidStart > 900 then
-                                WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit. Moving on.", Duration = 4 })
-                                break
-                            end
-                            local matsui = findRaidEnemyByName("Matsui")
-                            if matsui then attackRaidTarget(matsui, 3) task.wait(1) continue end
-                            local ibiboro = findRaidEnemyByName("Ibiboro")
-                            if ibiboro then attackRaidTarget(ibiboro, 3) task.wait(1) continue end
-                            local waterTank = findRaidEnemyByName("Water Tank") or findRaidEnemyByName("water tank") or findRaidEnemyByName("WaterTank")
-                            if waterTank then attackRaidTarget(waterTank, 3) task.wait(1) continue end
-                            local boss = findRaidEnemyByName("Alligator")
-                            if not boss then local all = getAllRaidEnemies() boss = all[1] end
-                            if boss then
-                                local checkEnd = tick() + 3
-                                while isAutoRaid and tick() < checkEnd do
-                                    if fireRaidContinueIfVisible() then break end
-                                    if boss:GetAttribute("dead") == true or not boss.Parent then break end
-                                    local char    = player.Character
-                                    local hrp     = char and char:FindFirstChild("HumanoidRootPart")
-                                    local myUnits = getMyUnits()
-                                    local tPos    = getEnemyCFrame(boss)
-                                    if tPos and hrp then
-                                        local dist = (hrp.Position - tPos.Position).Magnitude
-                                        if dist <= RAID_MAX_RANGE then
-                                            if dist > 8 then
-                                                hrp.CFrame = tPos * CFrame.new(0, 5, 0)
-                                                hrp.AssemblyLinearVelocity = Vector3.zero
-                                            end
-                                            teleportUnitsTo(tPos)
-                                            pcall(function() SendUnitRemote:FireServer(boss.Name, myUnits) end)
-                                        end
-                                    end
-                                    task.wait(0.2)
-                                end
-                            else
-                                noEnemyTimer += 0.5
-                                if noEnemyTimer >= 10 then
-                                    WindUI:Notify({ Title = "[Desert Kingdom] Complete!", Content = "All cleared!", Duration = 4 })
-                                    break
-                                end
-                                task.wait(0.5)
-                            end
-                        end
-
-                    elseif raidName == "Destroyed Nemak" then
-                        WindUI:Notify({ Title = "[Destroyed Nemak]", Content = "Priority: Jays and Barta", Duration = 4 })
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - raidStart > 900 then
-                                WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit. Moving on.", Duration = 4 })
-                                break
-                            end
-
-                            local priority = findRaidEnemyByName("Jays") or findRaidEnemyByName("Barta")
-                            if priority then
-                                noEnemyTimer = 0
-                                attackRaidTarget(priority, 3, 0.1)
-                                task.wait(0.1)
-                                continue
-                            end
-
-                            local targets = getAllRaidEnemies()
-                            if #targets == 0 then
-                                noEnemyTimer += 0.5
-                                if noEnemyTimer >= 10 then
-                                    WindUI:Notify({ Title = "[Destroyed Nemak] Complete!", Content = "All cleared!", Duration = 4 })
-                                    break
-                                end
-                                task.wait(0.5)
-                            else
-                                noEnemyTimer = 0
-                                attackRaidTarget(targets[1], 5, 0.15)
-                            end
-                        end
-
-                    elseif raidName == "Clan Hideout" then
-                        WindUI:Notify({ Title = "[Clan Hideout]", Content = "Priority: Itochi (Crow)", Duration = 4 })
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - raidStart > 900 then
-                                WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit. Moving on.", Duration = 4 })
-                                break
-                            end
-
-                            local itochiCrow = findRaidEnemyByName("Itochi (Crow)")
-                            if itochiCrow then
-                                noEnemyTimer = 0
-                                attackRaidTarget(itochiCrow, 3, 0.1)
-                                task.wait(0.1)
-                                continue
-                            end
-
-                            local targets = getAllRaidEnemies()
-                            if #targets == 0 then
-                                noEnemyTimer += 0.5
-                                if noEnemyTimer >= 10 then
-                                    WindUI:Notify({ Title = "[Clan Hideout] Complete!", Content = "All cleared!", Duration = 4 })
-                                    break
-                                end
-                                task.wait(0.5)
-                            else
-                                noEnemyTimer = 0
-                                attackRaidTarget(targets[1], 5, 0.15)
-                            end
-                        end
-
-                    else
-                        while isAutoRaid do
-                            if fireRaidContinueIfVisible() then break end
-                            if tick() - raidStart > 900 then
-                                WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit. Moving on.", Duration = 4 })
-                                break
-                            end
-                            local targets = getAllRaidEnemies()
-                            if #targets == 0 then
-                                noEnemyTimer += 0.5
-                                if noEnemyTimer >= 10 then
-                                    WindUI:Notify({ Title = string.format("[%s] Complete!", raidName), Content = "All enemies cleared!", Duration = 4 })
-                                    break
-                                end
-                                task.wait(0.5) continue
-                            end
-                            noEnemyTimer = 0
-                            for _, target in ipairs(targets) do
-                                if not isAutoRaid then break end
-                                if target:GetAttribute("dead") == true then continue end
-                                if not target.Parent then continue end
-                                attackRaidTarget(target, 15)
-                            end
-                        end
-                    end
+                    -- ใช้ runGenericRaid แทน hardcode แยกแต่ละ raid
+                    runGenericRaid(raidName, function() return isAutoRaid end)
 
                     pcall(function()
                         SetStateRemote:FireServer("attack", false)
@@ -2074,10 +2019,8 @@ GauntletTab:Divider()
 GauntletTab:Slider({
     Title    = "Leave at Floor",
     Icon     = "log-out",
-    Min      = 1,
-    Max      = 50,
-    Default  = Options.GauntletMaxFloor or 6,
-    Rounding = 0,
+    Step     = 1,
+    Value    = { Min = 1, Max = 50, Default = Options.GauntletMaxFloor or 6 },
     Callback = function(v)
         gauntletMaxFloor         = math.floor(v)
         Options.GauntletMaxFloor = gauntletMaxFloor
