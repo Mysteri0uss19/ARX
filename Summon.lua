@@ -123,6 +123,10 @@ local function loadTeam(slot)
     end)
 end
 
+
+local pauseForGauntlet = false
+local gauntletRunning  = false
+
 -- ============================================================
 --  CONTINUE BUTTON DETECTION
 -- ============================================================
@@ -805,6 +809,7 @@ local function attackTarget(target)
     local lastActionTick = 0
     while (isAutoFarm or isAutoSnipeBoss) and target and target.Parent do
         if target:GetAttribute("dead") == true then break end
+        if pauseForGauntlet then break end
         local char      = player.Character
         local hrp       = char and char:FindFirstChild("HumanoidRootPart")
         local myUnits   = getMyUnits()
@@ -958,7 +963,15 @@ local function runSingleRaid(raidName, isActiveFunc)
     })
 
     while isActiveFunc() do
-        -- ถ้าเห็น Victory/Continue UI ให้ break ออกทันที ไม่ต้องรอ
+        if pauseForGauntlet then
+            WindUI:Notify({
+                Title    = string.format("[%s] Paused", raidName),
+                Content  = "Gauntlet priority! Pausing raid...",
+                Duration = 3,
+            })
+            break
+        end
+
         if isRaidContinueVisible() then
             WindUI:Notify({
                 Title    = string.format("[%s] Victory!", raidName),
@@ -1014,9 +1027,8 @@ local function runSingleRaid(raidName, isActiveFunc)
         local lastAttackTick = 0
 
         while isActiveFunc() do
-            -- เช็ค Victory ใน inner loop ด้วย
+            if pauseForGauntlet then break end
             if isRaidContinueVisible() then break end
-
             if tick() - tStart > attackTimeout     then break end
             if not target or not target.Parent     then break end
             if target:GetAttribute("dead") == true then break end
@@ -1108,6 +1120,20 @@ local function startQueueRunner()
                 return
             end
 
+            if pauseForGauntlet then
+                WindUI:Notify({
+                    Title   = "Raid Queue Paused",
+                    Content = "Waiting for Gauntlet to finish...",
+                    Duration = 4,
+                })
+                while pauseForGauntlet do task.wait(1) end
+                WindUI:Notify({
+                    Title   = "Raid Queue Resumed",
+                    Content = "Gauntlet done! Resuming raids...",
+                    Duration = 3,
+                })
+            end
+
             local raidName, waitSec = pickNextRaid()
             if not raidName then task.wait(5) continue end
 
@@ -1125,6 +1151,9 @@ local function startQueueRunner()
                     task.wait(5)
                     waited += 5
                     pcall(updateRaidStatus)
+                    if pauseForGauntlet then
+                        while pauseForGauntlet do task.wait(1) end
+                    end
                     local newRaid, newWait = pickNextRaid()
                     if newWait == 0 then raidName = newRaid break end
                     if #getActiveRaids() == 0 then
@@ -1169,7 +1198,10 @@ local function startQueueRunner()
                         Duration = 4,
                     })
                     local w = 0
-                    while w < waitPortal + 3 and RaidStates[raidName] do task.wait(1) w += 1 end
+                    while w < waitPortal + 3 and RaidStates[raidName] do
+                        task.wait(1) w += 1
+                        if pauseForGauntlet then break end
+                    end
                     raidOpen, raidStatus, cooldownLeft = checkRaidOpenAtPortal(raidName)
                 end
                 if not raidOpen then
@@ -1186,6 +1218,7 @@ local function startQueueRunner()
             end
 
             if not RaidStates[raidName] then continue end
+            if pauseForGauntlet then continue end
 
             WindUI:Notify({
                 Title    = string.format("[%s] Raid Open!", raidName),
@@ -1216,14 +1249,13 @@ local function startQueueRunner()
                 SetStateRemote:FireServer("clicker", true)
             end)
 
-            runSingleRaid(raidName, function() return RaidStates[raidName] end)
+            runSingleRaid(raidName, function() return RaidStates[raidName] and not pauseForGauntlet end)
 
             pcall(function()
                 SetStateRemote:FireServer("attack", false)
                 SetStateRemote:FireServer("clicker", false)
             end)
 
-            -- Fire leave แล้วรอ 60 วิให้ Victory UI หายและ transition เสร็จ
             pcall(function() BossRaidLeaveRemote:FireServer() end)
 
             WindUI:Notify({
@@ -1467,6 +1499,133 @@ local function attackNearestEnemyOnce()
     end
 end
 
+
+local function runOneGauntletRound()
+    WindUI:Notify({
+        Title   = "Gauntlet",
+        Content = "Loading team...",
+        Duration = 2,
+    })
+    loadTeam(gauntletTeamSlot)
+    task.wait(1)
+    loadTeam(gauntletTeamSlot)
+    task.wait(2)
+
+    pcall(function()
+        GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false })
+    end)
+    task.wait(1.5)
+    pcall(function() GauntletStartRemote:FireServer() end)
+    task.wait(2)
+
+    pcall(function()
+        SetStateRemote:FireServer("attack", true)
+        SetStateRemote:FireServer("clicker", true)
+    end)
+
+    task.wait(3)
+
+    local lastCardFloor = -1
+    local attackTick    = 0
+
+    while isGauntletFarm do
+        local currentFloor = getCurrentFloor()
+
+        if isGauntletAutoLeave and currentFloor > 0 and currentFloor >= gauntletMaxFloor then
+            pcall(function()
+                SetStateRemote:FireServer("attack", false)
+                SetStateRemote:FireServer("clicker", false)
+            end)
+            WindUI:Notify({
+                Title    = "Auto Leave",
+                Content  = string.format("Reached Floor %d / %d — waiting 5s then leaving!", currentFloor, gauntletMaxFloor),
+                Duration = 5,
+            })
+            task.wait(5)
+            leaveGauntlet()
+            task.wait(3)
+            break
+        end
+
+        if isGauntletAutoCard
+            and currentFloor > 0
+            and currentFloor % 5 == 0
+            and currentFloor ~= lastCardFloor
+        then
+            lastCardFloor = currentFloor
+            task.spawn(doCardSelection)
+        end
+
+        if tick() - attackTick >= 0.15 then
+            attackTick = tick()
+            pcall(attackNearestEnemyOnce)
+        end
+
+        task.wait(0.05)
+    end
+
+    pcall(function()
+        SetStateRemote:FireServer("attack", false)
+        SetStateRemote:FireServer("clicker", false)
+    end)
+end
+
+
+task.spawn(function()
+    task.wait(5)
+
+    while true do
+        if not isGauntletFarm then
+            task.wait(2)
+            continue
+        end
+
+        local now        = os.time()
+        local secInMin   = now % 60         
+        local secToNext  = 60 - secInMin     
+
+        if secToNext > 5 then
+            local waitTime = secToNext - 5
+            if waitTime > 10 then
+                local minsLeft = math.floor(waitTime / 60)
+                local secsLeft = waitTime % 60
+                WindUI:Notify({
+                    Title   = "Gauntlet Scheduler",
+                    Content = string.format("Next Gauntlet in %02d:%02d", minsLeft, secsLeft),
+                    Duration = math.min(waitTime, 8),
+                })
+            end
+            task.wait(waitTime)
+        end
+
+        if not isGauntletFarm then continue end
+
+        pauseForGauntlet = true
+        gauntletRunning  = true
+
+        WindUI:Notify({
+            Title   = "Gauntlet Time!",
+            Content = "Pausing Raid & AutoEgg — entering Gauntlet now!",
+            Duration = 5,
+        })
+
+        task.wait(5)
+
+        pcall(runOneGauntletRound)
+
+        gauntletRunning  = false
+        pauseForGauntlet = false
+
+        WindUI:Notify({
+            Title   = "Gauntlet Done",
+            Content = "Resuming Raid & AutoEgg!",
+            Duration = 4,
+        })
+
+        task.wait(10)
+    end
+end)
+
 -- ============================================================
 --  WIND UI — THEME
 -- ============================================================
@@ -1530,7 +1689,7 @@ local Window = WindUI:CreateWindow({
     ScrollBarEnabled            = false,
 })
 Window:Tag({Title = "Beta",   Icon = "badge-alert", Color = Color3.fromHex("#0011ff"), Radius = 6})
-Window:Tag({Title = "v.0.0.2",Icon = "",            Color = Color3.fromHex("#30ff6a"), Radius = 6})
+Window:Tag({Title = "v.0.0.3",Icon = "",            Color = Color3.fromHex("#30ff6a"), Radius = 6})
 
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.RightControl)
 
@@ -1603,6 +1762,8 @@ FarmTab:Toggle({
             end)
             task.spawn(function()
                 while isAutoFarm do
+                    -- หยุดถ้า Gauntlet กำลังทำงาน
+                    if pauseForGauntlet then task.wait(1) continue end
                     if isAutoSnipeBoss then task.wait(1) continue end
                     if #selectedEnemyNames == 0 then task.wait(1) continue end
                     local target = findEnemyMulti(selectedEnemyNames)
@@ -1651,6 +1812,8 @@ FarmTab:Toggle({
             end)
             task.spawn(function()
                 while isAutoSnipeBoss do
+                    -- หยุดถ้า Gauntlet กำลังทำงาน
+                    if pauseForGauntlet then task.wait(1) continue end
                     if #selectedBossNames == 0 then task.wait(1) continue end
                     local myPos = (player.Character and player.Character:FindFirstChild("HumanoidRootPart")
                         and player.Character.HumanoidRootPart.Position) or Vector3.zero
@@ -1724,6 +1887,11 @@ SummonTab:Toggle({
         if isAutoEgg then
             task.spawn(function()
                 while isAutoEgg do
+                    -- *** หยุดถ้า Gauntlet priority ***
+                    if pauseForGauntlet then
+                        task.wait(1)
+                        continue
+                    end
                     pcall(function() teleportToEgg(selectedEggName) end)
                     task.wait(1)
                     pcall(function() OpenEggRemote:InvokeServer(selectedEggName) end)
@@ -2009,6 +2177,8 @@ updateRaidStatus = function()
                 local mins = math.floor(remaining / 60)
                 local secs = remaining % 60
                 table.insert(lines, string.format("[CD] %s — %02d:%02d", raidName, mins, secs))
+            elseif pauseForGauntlet then
+                table.insert(lines, string.format("[⏸] %s — Paused (Gauntlet)", raidName))
             else
                 table.insert(lines, string.format("[ON] %s — Queued", raidName))
             end
@@ -2139,105 +2309,36 @@ GauntletTab:Toggle({
     end
 })
 
+-- *** Gauntlet toggle ตอนนี้แค่เปิด/ปิด scheduler เท่านั้น ***
+-- การทำงานจริงถูกย้ายไปที่ Gauntlet Scheduler ด้านบน
 GauntletTab:Toggle({
     Title    = "Auto Farm Gauntlet",
     Icon     = "zap",
+    Desc     = "Auto-starts every xx:00 — always pauses Raid & Egg first",
     Type     = "Checkbox",
     Value    = Options.AutoGauntlet or false,
     Callback = function(v)
         isGauntletFarm       = v
         Options.AutoGauntlet = v
         SaveConfig()
-        if not isGauntletFarm then return end
-
-        task.spawn(function()
-            local function waitForNextMinute()
-                local now     = tick()
-                local secLeft = 60 - (now % 60)
-                if secLeft < 58 then
-                    WindUI:Notify({
-                        Title    = "Gauntlet",
-                        Content  = string.format("Waiting %ds for next minute...", math.floor(secLeft)),
-                        Duration = math.min(secLeft, 6),
-                    })
-                    task.wait(secLeft)
-                end
+        if v then
+            WindUI:Notify({
+                Title   = "Gauntlet Scheduler ON",
+                Content = "Gauntlet will auto-start every xx:00\nRaid & AutoEgg will pause during Gauntlet",
+                Duration = 6,
+            })
+        else
+            WindUI:Notify({
+                Title   = "Gauntlet Scheduler OFF",
+                Content = "Scheduler disabled",
+                Duration = 3,
+            })
+            -- คืนค่า pause flag ถ้า toggle ปิดขณะ gauntlet ค้างอยู่
+            if pauseForGauntlet then
+                pauseForGauntlet = false
+                gauntletRunning  = false
             end
-
-            waitForNextMinute()
-
-            while isGauntletFarm do
-                WindUI:Notify({
-                    Title   = "Gauntlet",
-                    Content = "Loading team...",
-                    Duration = 2,
-                })
-                loadTeam(gauntletTeamSlot)
-                task.wait(1)
-                loadTeam(gauntletTeamSlot)
-                task.wait(2)
-
-                pcall(function()
-                    GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false })
-                end)
-                task.wait(1.5)
-                pcall(function() GauntletStartRemote:FireServer() end)
-                task.wait(2)
-
-                pcall(function()
-                    SetStateRemote:FireServer("attack", true)
-                    SetStateRemote:FireServer("clicker", true)
-                end)
-
-                task.wait(3)
-
-                local lastCardFloor = -1
-                local attackTick    = 0
-
-                while isGauntletFarm do
-                    local currentFloor = getCurrentFloor()
-
-                    if isGauntletAutoLeave and currentFloor > 0 and currentFloor >= gauntletMaxFloor then
-                        pcall(function()
-                            SetStateRemote:FireServer("attack", false)
-                            SetStateRemote:FireServer("clicker", false)
-                        end)
-                        WindUI:Notify({
-                            Title    = "Auto Leave",
-                            Content  = string.format("Reached Floor %d / %d — waiting 5s then leaving!", currentFloor, gauntletMaxFloor),
-                            Duration = 5,
-                        })
-                        task.wait(5)
-                        leaveGauntlet()
-                        task.wait(3)
-                        break
-                    end
-
-                    if isGauntletAutoCard
-                        and currentFloor > 0
-                        and currentFloor % 5 == 0
-                        and currentFloor ~= lastCardFloor
-                    then
-                        lastCardFloor = currentFloor
-                        task.spawn(doCardSelection)
-                    end
-
-                    if tick() - attackTick >= 0.15 then
-                        attackTick = tick()
-                        pcall(attackNearestEnemyOnce)
-                    end
-
-                    task.wait(0.05)
-                end
-
-                task.wait(3)
-            end
-
-            pcall(function()
-                SetStateRemote:FireServer("attack", false)
-                SetStateRemote:FireServer("clicker", false)
-            end)
-        end)
+        end
     end
 })
 
