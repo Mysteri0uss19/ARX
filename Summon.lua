@@ -989,11 +989,10 @@ end
 -- ============================================================
 local function runSingleRaid(raidName, isActiveFunc)
     ensureRaidConfig(raidName)
-    local cfg           = RaidConfig[raidName]
-    local raidStart     = tick()
-    local noEnemyTimer  = 0
-    local lastPhase     = nil
-    local raidCompleted = false  -- flag สำหรับ break ออก outer loop
+    local cfg          = RaidConfig[raidName]
+    local raidStart    = tick()
+    local noEnemyTimer = 0
+    local lastPhase    = nil
 
     local lightStr = table.concat(cfg.light, ", ")
     local tankStr  = cfg.tank and (" -> " .. cfg.tank) or ""
@@ -1005,13 +1004,7 @@ local function runSingleRaid(raidName, isActiveFunc)
         Duration = 4,
     })
 
-    while isActiveFunc() and not raidCompleted do
-        -- เช็ค Continue ใน outer loop
-        if fireRaidContinueIfVisible() then
-            raidCompleted = true
-            break
-        end
-
+    while isActiveFunc() do
         if tick() - raidStart > 900 then
             WindUI:Notify({
                 Title    = string.format("[%s] Timed Out", raidName),
@@ -1058,11 +1051,6 @@ local function runSingleRaid(raidName, isActiveFunc)
         local lastAttackTick = 0
 
         while isActiveFunc() do
-            -- เช็ค Continue ใน inner loop ด้วย → set flag แล้ว break
-            if fireRaidContinueIfVisible() then
-                raidCompleted = true
-                break
-            end
             if tick() - tStart > attackTimeout     then break end
             if not target or not target.Parent     then break end
             if target:GetAttribute("dead") == true then break end
@@ -1096,9 +1084,6 @@ local function runSingleRaid(raidName, isActiveFunc)
             end
             task.wait(0.08)
         end
-
-        -- ถ้า inner loop set raidCompleted ให้ break outer loop ทันที
-        if raidCompleted then break end
     end
 end
 
