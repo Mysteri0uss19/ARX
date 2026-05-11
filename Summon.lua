@@ -1272,18 +1272,17 @@ local function startQueueRunner()
                 SetStateRemote:FireServer("clicker", false)
             end)
 
-            leaveRaidViaUI()
-pcall(function() BossRaidLeaveRemote:FireServer() end)
-task.wait(3)
+            pcall(function() BossRaidLeaveRemote:FireServer() end)
+            task.wait(3)
 
-RaidCooldowns[raidName] = tick() + RAID_COOLDOWN_DURATION
-pcall(updateRaidStatus)
+            RaidCooldowns[raidName] = tick() + RAID_COOLDOWN_DURATION
+            pcall(updateRaidStatus)
 
-WindUI:Notify({
-    Title    = string.format("[%s] Done — CD 20min", raidName),
-    Content  = "Checking next raid...",
-    Duration = 3,
-})
+            WindUI:Notify({
+                Title    = string.format("[%s] Done — CD 20min", raidName),
+                Content  = "Checking next raid...",
+                Duration = 3,
+            })
         end
     end)
 end
