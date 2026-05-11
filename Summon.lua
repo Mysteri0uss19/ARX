@@ -126,8 +126,6 @@ end
 -- ============================================================
 --  CONTINUE BUTTON DETECTION
 -- ============================================================
-local lastRaidContinueFire = 0
-
 local function isGuiActuallyVisible(guiObject)
     local current = guiObject
     while current and current ~= PlayerGui and current ~= CoreGui do
@@ -154,51 +152,6 @@ local function isRaidContinueVisible()
         end
     end
     return false
-end
-
-local function fireRaidContinueIfVisible()
-    if not isRaidContinueVisible() then return false end
-    if tick() - lastRaidContinueFire >= 1.5 then
-        lastRaidContinueFire = tick()
-        pcall(function()
-            for _, root in ipairs({ PlayerGui, CoreGui }) do
-                for _, gui in ipairs(root:GetDescendants()) do
-                    if (gui:IsA("TextLabel") or gui:IsA("TextButton")) and gui.Visible and isGuiActuallyVisible(gui) then
-                        local text = tostring(gui.Text or ""):lower()
-                        if text:find("continue") then
-                            -- คลิกปุ่มโดยตรง
-                            if gui:IsA("TextButton") or gui:IsA("ImageButton") then
-                                pcall(function() gui:Activate() end)
-                            end
-                            -- หา parent ที่เป็นปุ่ม
-                            local btn = gui
-                            while btn and btn ~= root do
-                                if btn:IsA("TextButton") or btn:IsA("ImageButton") then
-                                    pcall(function() btn:Activate() end)
-                                    break
-                                end
-                                btn = btn.Parent
-                            end
-                            local targetUI = (btn and btn ~= root) and btn or gui
-                            local absPos   = targetUI.AbsolutePosition
-                            local absSize  = targetUI.AbsoluteSize
-                            local clickX   = absPos.X + (absSize.X / 2)
-                            local clickY   = absPos.Y + (absSize.Y / 2) + 58
-                            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true,  game, 1)
-                            task.wait(0.1)
-                            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 1)
-                            VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.Return, false, game)
-                            task.wait(0.05)
-                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-        pcall(function() BossRaidLeaveRemote:FireServer() end)
-    end
-    return true
 end
 
 -- ============================================================
@@ -985,7 +938,7 @@ local function leaveRaidViaUI()
 end
 
 -- ============================================================
---  RAID RUNNER — แก้ไข: เพิ่ม raidCompleted flag
+--  RAID RUNNER
 -- ============================================================
 local function runSingleRaid(raidName, isActiveFunc)
     ensureRaidConfig(raidName)
@@ -1005,6 +958,16 @@ local function runSingleRaid(raidName, isActiveFunc)
     })
 
     while isActiveFunc() do
+        -- ถ้าเห็น Victory/Continue UI ให้ break ออกทันที ไม่ต้องรอ
+        if isRaidContinueVisible() then
+            WindUI:Notify({
+                Title    = string.format("[%s] Victory!", raidName),
+                Content  = "Raid complete, exiting...",
+                Duration = 3,
+            })
+            break
+        end
+
         if tick() - raidStart > 900 then
             WindUI:Notify({
                 Title    = string.format("[%s] Timed Out", raidName),
@@ -1018,7 +981,7 @@ local function runSingleRaid(raidName, isActiveFunc)
 
         if not target then
             noEnemyTimer += 0.3
-            if noEnemyTimer >= 10 then
+            if noEnemyTimer >= 5 then
                 WindUI:Notify({
                     Title    = string.format("[%s] Complete!", raidName),
                     Content  = "All enemies cleared!",
@@ -1051,6 +1014,9 @@ local function runSingleRaid(raidName, isActiveFunc)
         local lastAttackTick = 0
 
         while isActiveFunc() do
+            -- เช็ค Victory ใน inner loop ด้วย
+            if isRaidContinueVisible() then break end
+
             if tick() - tStart > attackTimeout     then break end
             if not target or not target.Parent     then break end
             if target:GetAttribute("dead") == true then break end
@@ -1229,7 +1195,7 @@ local function startQueueRunner()
 
             loadTeam(raidTeamSlot)
             task.wait(1)
-            loadTeam(raidTeamSlot)  
+            loadTeam(raidTeamSlot)
             task.wait(2)
 
             WindUI:Notify({
@@ -1257,14 +1223,22 @@ local function startQueueRunner()
                 SetStateRemote:FireServer("clicker", false)
             end)
 
+            -- Fire leave แล้วรอ 60 วิให้ Victory UI หายและ transition เสร็จ
             pcall(function() BossRaidLeaveRemote:FireServer() end)
-            task.wait(3)
+
+            WindUI:Notify({
+                Title    = string.format("[%s] Done!", raidName),
+                Content  = "Waiting 60s for UI to clear...",
+                Duration = 10,
+            })
+
+            task.wait(60)
 
             RaidCooldowns[raidName] = tick() + RAID_COOLDOWN_DURATION
             pcall(updateRaidStatus)
 
             WindUI:Notify({
-                Title    = string.format("[%s] Done — CD 20min", raidName),
+                Title    = string.format("[%s] CD 20min", raidName),
                 Content  = "Checking next raid...",
                 Duration = 3,
             })
@@ -1561,12 +1535,12 @@ Window:Tag({Title = "v.0.0.2",Icon = "",            Color = Color3.fromHex("#30f
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.RightControl)
 
 local FarmTab     = Window:Tab({ Title = "Farming",  Icon = "crosshair"    })
+local RaidTab     = Window:Tab({ Title = "Raid",     Icon = "shield-alert" })
+local GauntletTab = Window:Tab({ Title = "Gauntlet", Icon = "zap"          })
 local SummonTab   = Window:Tab({ Title = "Summon",   Icon = "star"         })
 local UnitTab     = Window:Tab({ Title = "Units",    Icon = "users"        })
 local WorldTab    = Window:Tab({ Title = "Teleport", Icon = "navigation"   })
 local QuestTab    = Window:Tab({ Title = "Quest",    Icon = "scroll"       })
-local RaidTab     = Window:Tab({ Title = "Raid",     Icon = "shield-alert" })
-local GauntletTab = Window:Tab({ Title = "Gauntlet", Icon = "zap"          })
 local SettingTab  = Window:Tab({ Title = "Settings", Icon = "cog"          })
 
 -- ============================================================
@@ -1816,7 +1790,6 @@ UnitTab:Toggle({
 UnitTab:Divider()
 UnitTab:Section({ Title = "Team Slots" })
 
--- Gauntlet Team
 UnitTab:Dropdown({
     Title    = "Gauntlet Team Slot",
     Icon     = "layers",
@@ -1845,7 +1818,6 @@ UnitTab:Button({
 
 UnitTab:Divider()
 
--- Raid Team
 UnitTab:Dropdown({
     Title    = "Raid Team Slot",
     Icon     = "shield-alert",
@@ -1874,7 +1846,6 @@ UnitTab:Button({
 
 UnitTab:Divider()
 
--- Manual load any slot
 local manualTeamSlot = "1"
 UnitTab:Dropdown({
     Title    = "Manual Load Any Slot",
@@ -2196,23 +2167,22 @@ GauntletTab:Toggle({
             waitForNextMinute()
 
             while isGauntletFarm do
-            WindUI:Notify({
-                Title   = "Gauntlet",
-                Content = "Loading team...",
-                Duration = 2,
-            })
-            loadTeam(gauntletTeamSlot)
-            task.wait(1)
-            loadTeam(gauntletTeamSlot)  -- fire ซ้ำกันค้าง
-            task.wait(2)
+                WindUI:Notify({
+                    Title   = "Gauntlet",
+                    Content = "Loading team...",
+                    Duration = 2,
+                })
+                loadTeam(gauntletTeamSlot)
+                task.wait(1)
+                loadTeam(gauntletTeamSlot)
+                task.wait(2)
 
-            pcall(function()
-                GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false })
-            end)
-            task.wait(1.5)
-            pcall(function() GauntletStartRemote:FireServer() end)
-            task.wait(2)
-
+                pcall(function()
+                    GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false })
+                end)
+                task.wait(1.5)
+                pcall(function() GauntletStartRemote:FireServer() end)
+                task.wait(2)
 
                 pcall(function()
                     SetStateRemote:FireServer("attack", true)
