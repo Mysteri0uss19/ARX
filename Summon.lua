@@ -53,6 +53,8 @@ local Options = {
     CardPriorityList   = {},
     SelectedQuestId    = "",
     AutoQuest          = false,
+    GauntletTeamSlot   = "1",
+    RaidTeamSlot       = "1",
 }
 
 local function SaveConfig()
@@ -101,21 +103,43 @@ local GauntletClearRemote  = RemoContainer:WaitForChild("gauntlet.clearButton")
 local QuestClaimRemote     = RemoContainer:WaitForChild("quests.claimPart")
 local BossRaidCreateRemote = RemoContainer:WaitForChild("bossRaids.create")
 local BossRaidLeaveRemote  = RemoContainer:WaitForChild("bossRaids.leaveRaid")
-
+local TeamsLoadRemote      = RemoContainer:WaitForChild("warriors.teams.load")
+local isDoingEgg    = false
+local savedFarmCFrame = nil
 pcall(function()
     SettingsSetRemote:FireServer("enemy_render_distance", "500 Studs")
 end)
 
-local lastRaidContinueFire = 0
+-- ============================================================
+--  TEAM SLOTS
+-- ============================================================
+local TEAM_SLOTS = {"1","2","3","4","5","6","7","8"}
+
+local gauntletTeamSlot = Options.GauntletTeamSlot or "1"
+local raidTeamSlot     = Options.RaidTeamSlot     or "1"
+
+local function loadTeam(slot)
+    pcall(function()
+        TeamsLoadRemote:FireServer(tostring(slot))
+    end)
+end
+
+
+local pauseForGauntlet = false
+local gauntletRunning  = false
 
 -- ============================================================
---  GUI HELPERS
+--  CONTINUE BUTTON DETECTION
 -- ============================================================
 local function isGuiActuallyVisible(guiObject)
     local current = guiObject
     while current and current ~= PlayerGui and current ~= CoreGui do
-        if current:IsA("GuiObject") and current.Visible == false then return false end
-        if current:IsA("ScreenGui") and current.Enabled == false then return false end
+        if current:IsA("GuiObject") and current.Visible == false then
+            return false
+        end
+        if current:IsA("ScreenGui") and current.Enabled == false then
+            return false
+        end
         current = current.Parent
     end
     return true
@@ -124,51 +148,15 @@ end
 local function isRaidContinueVisible()
     for _, rootGui in ipairs({ PlayerGui, CoreGui }) do
         for _, gui in ipairs(rootGui:GetDescendants()) do
-            if gui:IsA("TextLabel") and gui.Visible and isGuiActuallyVisible(gui) then
-                if tostring(gui.Text or ""):lower():find("continue", 1, true) then
+            if (gui:IsA("TextLabel") or gui:IsA("TextButton")) and gui.Visible and isGuiActuallyVisible(gui) then
+                local text = tostring(gui.Text or ""):lower()
+                if text:find("continue", 1, true) then
                     return true
                 end
             end
         end
     end
     return false
-end
-
-local function fireRaidContinueIfVisible()
-    if not isRaidContinueVisible() then return false end
-    if tick() - lastRaidContinueFire >= 1.5 then
-        lastRaidContinueFire = tick()
-        pcall(function()
-            for _, root in ipairs({ PlayerGui, CoreGui }) do
-                for _, gui in ipairs(root:GetDescendants()) do
-                    if gui:IsA("TextLabel") and gui.Visible and isGuiActuallyVisible(gui) then
-                        if tostring(gui.Text or ""):lower():find("continue") then
-                            local btn = gui
-                            while btn and btn ~= root do
-                                if btn:IsA("TextButton") or btn:IsA("ImageButton") then break end
-                                btn = btn.Parent
-                            end
-                            local targetUI = (btn and btn ~= root) and btn or gui
-                            local absPos  = targetUI.AbsolutePosition
-                            local absSize = targetUI.AbsoluteSize
-                            local cx = absPos.X + absSize.X / 2
-                            local cy = absPos.Y + absSize.Y / 2 + 58
-                            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true,  game, 1)
-                            task.wait(0.1)
-                            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
-                            VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.Return, false, game)
-                            task.wait(0.05)
-                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-                            if targetUI:IsA("GuiButton") then targetUI:Activate() end
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-        pcall(function() BossRaidLeaveRemote:FireServer() end)
-    end
-    return true
 end
 
 -- ============================================================
@@ -179,8 +167,12 @@ local CARD_WEIGHTS = {}
 
 pcall(function()
     local gauntletModule = require(
-        ReplicatedStorage:WaitForChild("src"):WaitForChild("common")
-            :WaitForChild("content"):WaitForChild("gamemodes"):WaitForChild("gauntlet")
+        ReplicatedStorage
+            :WaitForChild("src")
+            :WaitForChild("common")
+            :WaitForChild("content")
+            :WaitForChild("gamemodes")
+            :WaitForChild("gauntlet")
     )
     local cardsPool = gauntletModule
         and gauntletModule.gauntletContent
@@ -216,8 +208,12 @@ local RaidConfig = {}
 
 pcall(function()
     local raidModule = require(
-        ReplicatedStorage:WaitForChild("src"):WaitForChild("common")
-            :WaitForChild("content"):WaitForChild("gamemodes"):WaitForChild("raids")
+        ReplicatedStorage
+            :WaitForChild("src")
+            :WaitForChild("common")
+            :WaitForChild("content")
+            :WaitForChild("gamemodes")
+            :WaitForChild("raids")
     )
     local content = raidModule and raidModule.raidsContent
     if content then
@@ -246,10 +242,10 @@ end
 --  RAID PORTAL SIGN PATHS
 -- ============================================================
 local RaidPortalPaths = {
-    ["Desert Kingdom"]  = { "Sky Island",  "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
-    ["Clan Hideout"]    = { "Sand Village", "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
-    ["Destroyed Nemak"] = { "Planet Nemak", "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
-    ["Red Ribbon Base"] = { "Future City",  "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
+    ["Desert Kingdom"]  = { "Sky Island",   "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
+    ["Clan Hideout"]    = { "Sand Village",  "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
+    ["Destroyed Nemak"] = { "Planet Nemak",  "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
+    ["Red Ribbon Base"] = { "Future City",   "Components", "Portal", "sign", "SurfaceGui", "TextLabel" },
 }
 
 local function getRaidPortalLabel(raidName)
@@ -317,13 +313,13 @@ local function getRaidPortalCFrame(raidName)
     local portal = getRaidPortalObject(raidName)
     cf = getInstanceCFrame(portal)
     if cf then return cf end
-    local pathParts  = RaidPortalPaths[raidName]
-    local worldName  = pathParts and pathParts[1]
-    local locations  = Workspace:FindFirstChild("World")
+    local pathParts = RaidPortalPaths[raidName]
+    local worldName = pathParts and pathParts[1]
+    local locations = Workspace:FindFirstChild("World")
         and Workspace.World:FindFirstChild("Teleports")
         and Workspace.World.Teleports:FindFirstChild("Locations")
-    local worldLoc   = locations and worldName and locations:FindFirstChild(worldName)
-    cf = getInstanceCFrame(worldLoc)
+    local worldLocation = locations and worldName and locations:FindFirstChild(worldName)
+    cf = getInstanceCFrame(worldLocation)
     if cf then return cf end
     local node = getRaidPortalLabel(raidName)
     while node do
@@ -340,7 +336,8 @@ local function teleportToRaidPortal(raidName)
     local char = player.Character or player.CharacterAdded:Wait()
     local hrp  = char and char:WaitForChild("HumanoidRootPart", 3)
     if not hrp then return false end
-    hrp.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, 5, 8), cf.Position)
+    local targetPos = cf.Position + Vector3.new(0, 5, 8)
+    hrp.CFrame = CFrame.lookAt(targetPos, cf.Position)
     hrp.AssemblyLinearVelocity  = Vector3.zero
     hrp.AssemblyAngularVelocity = Vector3.zero
     return true
@@ -349,7 +346,8 @@ end
 local function getRaidStatusFromPortal(raidName)
     local node = getRaidPortalLabel(raidName)
     if not node then return nil end
-    local plain = (node.Text or ""):gsub("<[^>]+>", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local text  = node.Text or ""
+    local plain = text:gsub("<[^>]+>", ""):gsub("^%s+", ""):gsub("%s+$", "")
     return plain:match("[^\n]+$") or plain
 end
 
@@ -357,15 +355,18 @@ local function getRaidCooldownSecondsFromStatus(status)
     if type(status) ~= "string" then return nil end
     local lower = status:lower()
     if not lower:find("open in") then return nil end
-    local m, s = lower:match("(%d+)%s*:%s*(%d+)")
-    if m and s then return (tonumber(m) or 0) * 60 + (tonumber(s) or 0) end
-    local onlyS = lower:match("open in:%s*(%d+)")
-    if onlyS then return tonumber(onlyS) end
+    local minutes, seconds = lower:match("(%d+)%s*:%s*(%d+)")
+    if minutes and seconds then
+        return (tonumber(minutes) or 0) * 60 + (tonumber(seconds) or 0)
+    end
+    local onlySeconds = lower:match("open in:%s*(%d+)")
+    if onlySeconds then return tonumber(onlySeconds) end
     return nil
 end
 
 local function isRaidOpen(raidName)
-    if not RaidPortalPaths[raidName] then return true end
+    local pathParts = RaidPortalPaths[raidName]
+    if not pathParts then return true end
     local ok, result = pcall(function()
         local plain = getRaidStatusFromPortal(raidName)
         if not plain then return nil end
@@ -377,17 +378,23 @@ local function isRaidOpen(raidName)
 end
 
 local function getRaidStatusText(raidName)
-    if not RaidPortalPaths[raidName] then return "[Unknown]" end
-    local ok, result = pcall(function() return getRaidStatusFromPortal(raidName) end)
+    local pathParts = RaidPortalPaths[raidName]
+    if not pathParts then return "[Unknown]" end
+    local ok, result = pcall(function()
+        return getRaidStatusFromPortal(raidName)
+    end)
     if ok and result then return result end
     return "?"
 end
 
 local function checkRaidOpenAtPortal(raidName)
     local teleported = false
-    pcall(function() teleported = teleportToRaidPortal(raidName) end)
+    pcall(function()
+        teleported = teleportToRaidPortal(raidName)
+    end)
     task.wait(0.75)
-    local status, open = "?", false
+    local status
+    local open = false
     for _ = 1, 8 do
         status = getRaidStatusText(raidName)
         open   = isRaidOpen(raidName)
@@ -404,8 +411,12 @@ local WorldsData = {}
 
 pcall(function()
     local worldsModule = require(
-        ReplicatedStorage:WaitForChild("src"):WaitForChild("common")
-            :WaitForChild("content"):WaitForChild("world"):WaitForChild("worlds")
+        ReplicatedStorage
+            :WaitForChild("src")
+            :WaitForChild("common")
+            :WaitForChild("content")
+            :WaitForChild("world")
+            :WaitForChild("worlds")
     )
     if worldsModule and worldsModule.worldsContent then
         WorldsData = worldsModule.worldsContent
@@ -416,21 +427,25 @@ if next(WorldsData) == nil then
     WorldsData = {
         ["Planet Nemak"] = {
             displayName = "Planet Nemak", order = 1,
+            baseMaterial = "Dragon Fragment", lesserMaterial = "Magic Bean",
             quest = "PlanetNemak", eggs = { "Nemak" }, raids = { "Destroyed Nemak" },
             enemies = { normal = { "Dodo", "Carbon", "Barta", "Jays" }, miniBoss = { "Genyu" }, boss = { "Freeze" } },
         },
         ["Future City"] = {
             displayName = "Future City", order = 2,
+            baseMaterial = "Capsule Fragment", lesserMaterial = "Capsule",
             quest = "FutureCity", eggs = { "Corps" }, raids = { "Red Ribbon Base" },
             enemies = { normal = { "Cel Jr.", "Android 19", "Android 20", "Android 18" }, miniBoss = { "Android 17" }, boss = { "Cel (Prime)" } },
         },
         ["Sand Village"] = {
             displayName = "Sand Village", order = 3,
+            baseMaterial = "Sand Fragment", lesserMaterial = "Headband",
             quest = "SandVillage", eggs = { "Ninja" }, raids = { "Clan Hideout" },
             enemies = { normal = { "Sand Ninja", "Sand Elder", "Puppeteer", "Temmuri" }, miniBoss = { "Gurra" }, boss = { "Orochi (Disguised)" } },
         },
         ["Sky Island"] = {
             displayName = "Sky Island", order = 4,
+            baseMaterial = "Ancient Tablet Fragment", lesserMaterial = "Sky Fish",
             quest = "SkyIslandQuest", eggs = { "Sky" }, raids = { "Desert Kingdom" },
             enemies = { normal = { "Sky Guard", "Saturn", "Geda", "Shuri" }, miniBoss = { "Ohem" }, boss = { "Enil" } },
         },
@@ -472,7 +487,9 @@ local function buildQuestLabelMap()
         if quest and quest.parts then
             for partIndex, part in ipairs(quest.parts) do
                 local label = part.title or (id .. " Part " .. partIndex)
-                if QuestLabelMap[label] then label = label .. " (" .. (quest.title or id) .. ")" end
+                if QuestLabelMap[label] then
+                    label = label .. " (" .. (quest.title or id) .. ")"
+                end
                 QuestLabelMap[label] = { questId = id, partIndex = partIndex }
             end
         end
@@ -482,8 +499,10 @@ end
 task.spawn(function()
     local ok, questModule = pcall(function()
         return require(
-            ReplicatedStorage:WaitForChild("src"):WaitForChild("common")
-                :WaitForChild("content"):WaitForChild("world"):WaitForChild("quests")
+            ReplicatedStorage
+                :WaitForChild("src"):WaitForChild("common")
+                :WaitForChild("content"):WaitForChild("world")
+                :WaitForChild("quests")
         )
     end)
     if ok and questModule and questModule.questsContent then
@@ -493,14 +512,15 @@ task.spawn(function()
 end)
 
 local function getQuestList()
-    local entries, orderedIds = {}, {}
+    local entries    = {}
+    local orderedIds = {}
     for id in pairs(QuestData) do table.insert(orderedIds, id) end
     table.sort(orderedIds)
     for _, id in ipairs(orderedIds) do
         local quest = QuestData[id]
         if quest and quest.parts then
             for partIndex, part in ipairs(quest.parts) do
-                local label = part.title or (id .. " Part " .. partIndex)
+                local label   = part.title or (id .. " Part " .. partIndex)
                 local tempMap = {}
                 if tempMap[label] then label = label .. " (" .. (quest.title or id) .. ")" end
                 tempMap[label] = true
@@ -539,6 +559,7 @@ local isAutoEgg           = false
 local selectedEggName     = Options.SelectedEggName    or "Nemak"
 local isAutoEquip         = false
 local isAutoWeapon        = false
+local isAutoGauntlet      = false
 local gauntletMaxFloor    = Options.GauntletMaxFloor   or 6
 local cardPriorityList    = Options.CardPriorityList   or {}
 local isGauntletFarm      = false
@@ -547,8 +568,6 @@ local isGauntletAutoLeave = false
 local isCardSelecting     = false
 local isAutoQuest         = false
 local selectedQuestId     = Options.SelectedQuestId    or ""
-
-local isInRaid = false
 
 local BossList = {
     "Genyu","Freeze","Freeze (2nd)","Android 17",
@@ -604,7 +623,9 @@ local function goToNPCAndClaim(questId)
             if npc:IsA("Model") then
                 if npc.PrimaryPart then npcCF = npc.PrimaryPart.CFrame
                 else pcall(function() npcCF = npc:GetPivot() end) end
-            elseif npc:IsA("BasePart") then npcCF = npc.CFrame end
+            elseif npc:IsA("BasePart") then
+                npcCF = npc.CFrame
+            end
             if npcCF then
                 hrp.CFrame = npcCF * CFrame.new(0, 0, 3)
                 hrp.AssemblyLinearVelocity = Vector3.zero
@@ -658,11 +679,13 @@ local function teleportToEgg(eggName)
         local char = player.Character
         local hrp  = char and char:FindFirstChild("HumanoidRootPart")
         if hrp then
-            local eggPos    = cf.Position
-            local targetPos = eggPos + Vector3.new(0, 10, 3)
-            local tCF = CFrame.lookAt(targetPos, Vector3.new(eggPos.X, targetPos.Y, eggPos.Z))
-            if (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude > 5 then
-                hrp.CFrame = tCF
+            local eggPos       = cf.Position
+            local targetPos    = eggPos + Vector3.new(0, 10, 3)
+            local targetCFrame = CFrame.lookAt(targetPos, Vector3.new(eggPos.X, targetPos.Y, eggPos.Z))
+            local hrpPosXZ     = Vector3.new(hrp.Position.X, 0, hrp.Position.Z)
+            local targetPosXZ  = Vector3.new(targetPos.X, 0, targetPos.Z)
+            if (hrpPosXZ - targetPosXZ).Magnitude > 5 then
+                hrp.CFrame = targetCFrame
                 hrp.AssemblyLinearVelocity  = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 local humanoid = char:FindFirstChild("Humanoid")
@@ -675,7 +698,7 @@ local function teleportToEgg(eggName)
 end
 
 -- ============================================================
---  HELPERS — ENEMY (general)
+--  HELPERS — ENEMY
 -- ============================================================
 local function getEnemyCFrame(entity)
     if not entity then return nil end
@@ -787,18 +810,19 @@ local function attackTarget(target)
     local lastActionTick = 0
     while (isAutoFarm or isAutoSnipeBoss) and target and target.Parent do
         if target:GetAttribute("dead") == true then break end
-        local char    = player.Character
-        local hrp     = char and char:FindFirstChild("HumanoidRootPart")
-        local myUnits = getMyUnits()
-        local tPos    = getEnemyCFrame(target)
-        if tPos then
+        if pauseForGauntlet then break end
+        local char      = player.Character
+        local hrp       = char and char:FindFirstChild("HumanoidRootPart")
+        local myUnits   = getMyUnits()
+        local targetPos = getEnemyCFrame(target)
+        if targetPos then
             if hrp then
-                hrp.CFrame = tPos * CFrame.new(0, 5, 0)
+                hrp.CFrame = targetPos * CFrame.new(0, 5, 0)
                 hrp.AssemblyLinearVelocity = Vector3.zero
             end
             if tick() - lastActionTick >= 0.2 then
                 lastActionTick = tick()
-                teleportUnitsTo(tPos)
+                teleportUnitsTo(targetPos)
                 pcall(function() SendUnitRemote:FireServer(target.Name, myUnits) end)
             end
         end
@@ -811,6 +835,23 @@ end
 -- ============================================================
 local RAID_MAX_RANGE = 1000
 
+local function getEnemyRealName(enemy)
+    local overheadUI = PlayerGui:FindFirstChild("enemy-overhead-" .. enemy.Name)
+    if overheadUI then
+        local frame = overheadUI:FindFirstChild("Frame")
+        local lbl   = frame and frame:FindFirstChild("TextLabel")
+        if lbl and lbl.Text and lbl.Text ~= "" then return lbl.Text end
+    end
+    return enemy.Name
+end
+
+local function isEnemyAlive(enemy)
+    if enemy:GetAttribute("dead") == true then return false end
+    local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health <= 0 then return false end
+    return true
+end
+
 local function getAllRaidEnemies()
     local enemies = {}
     local char    = player.Character
@@ -819,22 +860,18 @@ local function getAllRaidEnemies()
     local worldEnemies = Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Enemies")
     if worldEnemies then
         for _, enemy in ipairs(worldEnemies:GetChildren()) do
-            if enemy:GetAttribute("dead") == true then continue end
-            local humanoid = enemy:FindFirstChildOfClass("Humanoid")
-            if not humanoid or humanoid.Health <= 0 then continue end
+            if not isEnemyAlive(enemy) then continue end
             local cf = getEnemyCFrame(enemy)
             if cf then
                 local dist = (cf.Position - myPos).Magnitude
                 if dist <= RAID_MAX_RANGE then
-                    table.insert(enemies, { obj = enemy, dist = dist })
+                    table.insert(enemies, { obj = enemy, dist = dist, realName = getEnemyRealName(enemy) })
                 end
             end
         end
     end
     table.sort(enemies, function(a, b) return a.dist < b.dist end)
-    local result = {}
-    for _, e in ipairs(enemies) do table.insert(result, e.obj) end
-    return result
+    return enemies
 end
 
 local function findRaidEnemyByName(name)
@@ -843,88 +880,49 @@ local function findRaidEnemyByName(name)
     local char  = player.Character
     local hrp   = char and char:FindFirstChild("HumanoidRootPart")
     local myPos = hrp and hrp.Position or Vector3.zero
-    local targetName = name:lower()
+    local nameLower = name:lower()
     local best, bestDist = nil, math.huge
     for _, e in ipairs(worldEnemies:GetChildren()) do
-        if e:GetAttribute("dead") == true then continue end
+        if not isEnemyAlive(e) then continue end
         local cf = getEnemyCFrame(e)
         if not cf then continue end
         local dist = (cf.Position - myPos).Magnitude
         if dist > RAID_MAX_RANGE then continue end
-        local matched = false
-        if e.Name == name or e.Name:lower():find(targetName, 1, true) then
-            matched = true
-        else
-            local ui = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
-            if ui then
-                local frame = ui:FindFirstChild("Frame")
-                local lbl   = frame and frame:FindFirstChild("TextLabel")
-                if lbl and (lbl.Text == name or lbl.Text:lower():find(targetName, 1, true)) then
-                    matched = true
-                end
-            end
+        local realName = getEnemyRealName(e)
+        if realName:lower():find(nameLower, 1, true) or nameLower:find(realName:lower(), 1, true) then
+            if dist < bestDist then bestDist = dist best = e end
         end
-        if matched and dist < bestDist then bestDist = dist best = e end
     end
     return best
 end
 
 local function pickRaidTarget(raidName)
     ensureRaidConfig(raidName)
-    local cfg       = RaidConfig[raidName]
-    local nearbyAll = getAllRaidEnemies()
-
-    local validNames = {}
-    for _, n in ipairs(cfg.light) do validNames[n:lower()] = true end
-    if cfg.tank then validNames[cfg.tank:lower()] = true end
-
-    local function findNearbyByName(name)
-        local targetName = name:lower()
-        for _, e in ipairs(nearbyAll) do
-            if e.Name == name or e.Name:lower():find(targetName, 1, true) then return e end
-            local ui = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
-            if ui then
-                local frame = ui:FindFirstChild("Frame")
-                local lbl   = frame and frame:FindFirstChild("TextLabel")
-                if lbl and (lbl.Text == name or lbl.Text:lower():find(targetName, 1, true)) then return e end
+    local cfg        = RaidConfig[raidName]
+    local allEnemies = getAllRaidEnemies()
+    local function findByName(name)
+        local nameLower = name:lower()
+        for _, e in ipairs(allEnemies) do
+            if e.realName:lower():find(nameLower, 1, true) or nameLower:find(e.realName:lower(), 1, true) then
+                return e.obj
             end
         end
         return nil
     end
-
-    -- light phase
     for _, lightName in ipairs(cfg.light) do
-        local e = findNearbyByName(lightName)
+        local e = findByName(lightName)
         if e then return e, "light" end
     end
-
-    -- tank phase
     if cfg.tank then
-        local e = findNearbyByName(cfg.tank)
+        local e = findByName(cfg.tank)
         if e then return e, "tank" end
     end
-
-    if nearbyAll[1] then
-        local e       = nearbyAll[1]
-        local eName   = e.Name:lower()
-        local ui      = PlayerGui:FindFirstChild("enemy-overhead-" .. e.Name)
-        local dispName = ""
-        if ui then
-            local frame = ui:FindFirstChild("Frame")
-            local lbl   = frame and frame:FindFirstChild("TextLabel")
-            if lbl then dispName = lbl.Text:lower() end
-        end
-        if validNames[eName] or (dispName ~= "" and validNames[dispName]) then
-            return e, "light"
-        end
-        return e, "boss"
-    end
-
+    if allEnemies[1] then return allEnemies[1].obj, "boss" end
     return nil, nil
 end
 
 -- ============================================================
---  HELPERS — LEAVE RAID
+--  HELPERS — LEAVE RAID VIA UI
 -- ============================================================
 local function leaveRaidViaUI()
     local function tryClick(root)
@@ -958,18 +956,38 @@ local function runSingleRaid(raidName, isActiveFunc)
     local lightStr = table.concat(cfg.light, ", ")
     local tankStr  = cfg.tank and (" -> " .. cfg.tank) or ""
     WindUI:Notify({
-        Title   = string.format("[%s] Started", raidName),
-        Content = (#cfg.light > 0)
-                  and string.format("Priority: %s%s -> Boss", lightStr, tankStr)
-                  or  "No light enemies — going straight to boss",
+        Title    = string.format("[%s] Started", raidName),
+        Content  = (#cfg.light > 0)
+                   and string.format("Priority: %s%s -> Boss", lightStr, tankStr)
+                   or  "No light enemies — going straight to boss",
         Duration = 4,
     })
 
     while isActiveFunc() do
-        if fireRaidContinueIfVisible() then break end
+        if pauseForGauntlet then
+            WindUI:Notify({
+                Title    = string.format("[%s] Paused", raidName),
+                Content  = "Gauntlet priority! Pausing raid...",
+                Duration = 3,
+            })
+            break
+        end
+
+        if isRaidContinueVisible() then
+            WindUI:Notify({
+                Title    = string.format("[%s] Victory!", raidName),
+                Content  = "Raid complete, exiting...",
+                Duration = 3,
+            })
+            break
+        end
 
         if tick() - raidStart > 900 then
-            WindUI:Notify({ Title = string.format("[%s] Timed Out", raidName), Content = "15 min limit reached.", Duration = 4 })
+            WindUI:Notify({
+                Title    = string.format("[%s] Timed Out", raidName),
+                Content  = "15 min limit reached.",
+                Duration = 4,
+            })
             break
         end
 
@@ -977,8 +995,12 @@ local function runSingleRaid(raidName, isActiveFunc)
 
         if not target then
             noEnemyTimer += 0.3
-            if noEnemyTimer >= 10 then
-                WindUI:Notify({ Title = string.format("[%s] Complete!", raidName), Content = "All enemies cleared!", Duration = 4 })
+            if noEnemyTimer >= 5 then
+                WindUI:Notify({
+                    Title    = string.format("[%s] Complete!", raidName),
+                    Content  = "All enemies cleared!",
+                    Duration = 4,
+                })
                 break
             end
             task.wait(0.3)
@@ -989,8 +1011,16 @@ local function runSingleRaid(raidName, isActiveFunc)
 
         if targetType ~= lastPhase then
             lastPhase = targetType
-            local msgs = { light = "Clearing light enemies...", tank = "Attacking tank enemy...", boss = "Engaging boss!" }
-            WindUI:Notify({ Title = string.format("[%s]", raidName), Content = msgs[targetType] or "", Duration = 3 })
+            local msgs = {
+                light = "Clearing light enemies...",
+                tank  = "Attacking tank enemy...",
+                boss  = "Engaging boss!",
+            }
+            WindUI:Notify({
+                Title    = string.format("[%s]", raidName),
+                Content  = msgs[targetType] or "",
+                Duration = 3,
+            })
         end
 
         local attackTimeout  = targetType == "light" and 5 or targetType == "tank" and 8 or 20
@@ -998,9 +1028,10 @@ local function runSingleRaid(raidName, isActiveFunc)
         local lastAttackTick = 0
 
         while isActiveFunc() do
-            if fireRaidContinueIfVisible() then break end
-            if tick() - tStart > attackTimeout then break end
-            if not target or not target.Parent then break end
+            if pauseForGauntlet then break end
+            if isRaidContinueVisible() then break end
+            if tick() - tStart > attackTimeout     then break end
+            if not target or not target.Parent     then break end
             if target:GetAttribute("dead") == true then break end
 
             if targetType ~= "light" and #cfg.light > 0 then
@@ -1036,170 +1067,238 @@ local function runSingleRaid(raidName, isActiveFunc)
 end
 
 -- ============================================================
---  RAID STATE & SEQUENTIAL QUEUE
+--  RAID STATE & QUEUE SYSTEM
 -- ============================================================
-local RaidStates    = {
+local RAID_ORDER = { "Destroyed Nemak", "Red Ribbon Base", "Clan Hideout", "Desert Kingdom" }
+local RAID_COOLDOWN_DURATION = 20 * 60
+
+local RaidStates  = {
     ["Destroyed Nemak"] = false,
     ["Red Ribbon Base"]  = false,
     ["Clan Hideout"]     = false,
     ["Desert Kingdom"]   = false,
 }
-local RaidCooldowns      = {}
-local RaidQueueThread    = nil
-local RAID_COOLDOWN_DURATION = 20 * 60   -- 20 นาที
-local RAID_BETWEEN_WAIT      = 60        -- รอ 60 วิระหว่าง raid
-local RAID_ORDER = {
-    "Destroyed Nemak",
-    "Red Ribbon Base",
-    "Clan Hideout",
-    "Desert Kingdom",
-}
-
-local function getActiveRaids()
-    local t = {}
-    for _, n in ipairs(RAID_ORDER) do
-        if RaidStates[n] then table.insert(t, n) end
-    end
-    return t
-end
+local RaidCooldowns  = {}
+local isQueueRunning = false
+local queueThread    = nil
 
 local updateRaidStatus
 
-local function startRaidQueueIfNeeded()
-    if RaidQueueThread then return end
+local function getActiveRaids()
+    local active = {}
+    for _, name in ipairs(RAID_ORDER) do
+        if RaidStates[name] then table.insert(active, name) end
+    end
+    return active
+end
 
-    RaidQueueThread = task.spawn(function()
+local function pickNextRaid()
+    local active   = getActiveRaids()
+    local now      = tick()
+    local best     = nil
+    local bestWait = math.huge
+    for _, name in ipairs(active) do
+        local cdEnd = RaidCooldowns[name]
+        if not cdEnd or now >= cdEnd then
+            return name, 0
+        else
+            local wait = cdEnd - now
+            if wait < bestWait then bestWait = wait best = name end
+        end
+    end
+    return best, bestWait
+end
+
+local function startQueueRunner()
+    if isQueueRunning then return end
+    isQueueRunning = true
+
+    queueThread = task.spawn(function()
         while true do
-            local active = getActiveRaids()
-            if #active == 0 then break end
+            if #getActiveRaids() == 0 then
+                isQueueRunning = false
+                queueThread    = nil
+                return
+            end
 
-            local didRunAny = false
-
-            for _, raidName in ipairs(active) do
-                if not RaidStates[raidName] then continue end
-
-                local cdEnd = RaidCooldowns[raidName]
-                if cdEnd and tick() < cdEnd then
-                    local rem = math.ceil(cdEnd - tick())
-                    WindUI:Notify({
-                        Title   = string.format("[%s] Cooldown", raidName),
-                        Content = string.format("%dm %ds left — skipping for now", math.floor(rem/60), rem%60),
-                        Duration = 4,
-                    })
-                    pcall(updateRaidStatus)
-                    continue
-                end
-
-                -- ไปเช็ค portal
-                WindUI:Notify({ Title = string.format("[%s] Checking Portal", raidName), Content = "Teleporting...", Duration = 2 })
-                task.wait(1)
-                local raidOpen, raidStatus, cooldownLeft, teleported = checkRaidOpenAtPortal(raidName)
-                pcall(updateRaidStatus)
-
-                if not teleported then
-                    WindUI:Notify({ Title = string.format("[%s] Portal Not Found", raidName), Content = "Skipping...", Duration = 3 })
-                    continue
-                end
-
-                if not raidOpen then
-                    local waitSec = math.min(cooldownLeft or 120, 120)
-                    WindUI:Notify({
-                        Title   = string.format("[%s] Closed", raidName),
-                        Content = string.format("%s — cooldown %ds", raidStatus or "?", waitSec),
-                        Duration = 4,
-                    })
-                    RaidCooldowns[raidName] = tick() + waitSec
-                    pcall(updateRaidStatus)
-                    continue
-                end
-
-                didRunAny = true
-                WindUI:Notify({ Title = string.format("[%s] Open! Entering...", raidName), Content = "", Duration = 3 })
-
-                pcall(function()
-                    BossRaidCreateRemote:InvokeServer(raidName, { friendsOnly = false, spawnNormal = false })
-                end)
-                task.wait(2)
-                pcall(function() GauntletStartRemote:FireServer() end)
-                task.wait(3)
-
-                isInRaid = true  
-                pcall(function()
-                    SetStateRemote:FireServer("attack", true)
-                    SetStateRemote:FireServer("clicker", true)
-                end)
-
-                runSingleRaid(raidName, function() return RaidStates[raidName] end)
-
-                pcall(function()
-                    SetStateRemote:FireServer("attack", false)
-                    SetStateRemote:FireServer("clicker", false)
-                end)
-                isInRaid = false  
-
-                WindUI:Notify({ Title = string.format("[%s] Done!", raidName), Content = "Leaving raid...", Duration = 3 })
-                leaveRaidViaUI()
-                task.wait(3)
-
-                RaidCooldowns[raidName] = tick() + RAID_COOLDOWN_DURATION
-                pcall(updateRaidStatus)
-
+            if pauseForGauntlet then
                 WindUI:Notify({
-                    Title   = "Queue — Waiting",
-                    Content = string.format("Waiting %ds before next raid...", RAID_BETWEEN_WAIT),
-                    Duration = 8,
+                    Title   = "Raid Queue Paused",
+                    Content = "Waiting for Gauntlet to finish...",
+                    Duration = 4,
+                })
+                while pauseForGauntlet do task.wait(1) end
+                WindUI:Notify({
+                    Title   = "Raid Queue Resumed",
+                    Content = "Gauntlet done! Resuming raids...",
+                    Duration = 3,
+                })
+            end
+
+            local raidName, waitSec = pickNextRaid()
+            if not raidName then task.wait(5) continue end
+
+            if waitSec > 0 then
+                local mins = math.floor(waitSec / 60)
+                local secs = math.floor(waitSec % 60)
+                WindUI:Notify({
+                    Title    = "All Raids on Cooldown",
+                    Content  = string.format("Next: [%s] in %02d:%02d\nWaiting...", raidName, mins, secs),
+                    Duration = 6,
                 })
                 local waited = 0
-                while waited < RAID_BETWEEN_WAIT and #getActiveRaids() > 0 do
+                local target = waitSec + 2
+                while waited < target do
                     task.wait(5)
                     waited += 5
                     pcall(updateRaidStatus)
+                    if pauseForGauntlet then
+                        while pauseForGauntlet do task.wait(1) end
+                    end
+                    local newRaid, newWait = pickNextRaid()
+                    if newWait == 0 then raidName = newRaid break end
+                    if #getActiveRaids() == 0 then
+                        isQueueRunning = false
+                        queueThread    = nil
+                        return
+                    end
+                end
+                if RaidCooldowns[raidName] and tick() >= RaidCooldowns[raidName] then
+                    RaidCooldowns[raidName] = nil
                 end
             end
 
-            local stillActive = getActiveRaids()
-            if #stillActive == 0 then break end
+            if not RaidStates[raidName] then continue end
 
-            local allOnCD = true
-            for _, n in ipairs(stillActive) do
-                local cd = RaidCooldowns[n]
-                if not cd or tick() >= cd then allOnCD = false break end
-            end
+            WindUI:Notify({
+                Title    = string.format("[%s] Checking Portal", raidName),
+                Content  = "Teleporting to portal...",
+                Duration = 2,
+            })
+            task.wait(1)
 
-            if allOnCD or not didRunAny then
-                local minLeft = math.huge
-                for _, n in ipairs(stillActive) do
-                    local left = (RaidCooldowns[n] or 0) - tick()
-                    if left < minLeft then minLeft = left end
-                end
-                minLeft = math.max(minLeft, 30)
+            local raidOpen, raidStatus, cooldownLeft, teleported = checkRaidOpenAtPortal(raidName)
+            pcall(updateRaidStatus)
+
+            if not teleported then
                 WindUI:Notify({
-                    Title   = "All Raids Cooling",
-                    Content = string.format("Waiting %dm %ds...", math.floor(minLeft/60), minLeft%60),
-                    Duration = 8,
+                    Title    = string.format("[%s] Portal Not Found", raidName),
+                    Content  = "Cannot locate portal. Skipping...",
+                    Duration = 4,
                 })
-                local waited2 = 0
-                while waited2 < minLeft and #getActiveRaids() > 0 do
-                    task.wait(30)
-                    waited2 += 30
+                RaidCooldowns[raidName] = tick() + 20
+                continue
+            end
+
+            if not raidOpen then
+                local waitPortal = cooldownLeft or 120
+                if waitPortal <= 90 then
+                    WindUI:Notify({
+                        Title    = string.format("[%s] Opening Soon", raidName),
+                        Content  = string.format("Waiting %ds for portal...", math.max(1, waitPortal)),
+                        Duration = 4,
+                    })
+                    local w = 0
+                    while w < waitPortal + 3 and RaidStates[raidName] do
+                        task.wait(1) w += 1
+                        if pauseForGauntlet then break end
+                    end
+                    raidOpen, raidStatus, cooldownLeft = checkRaidOpenAtPortal(raidName)
+                end
+                if not raidOpen then
+                    local storeSec = cooldownLeft and math.max(cooldownLeft, 30) or 60
+                    RaidCooldowns[raidName] = tick() + storeSec
+                    WindUI:Notify({
+                        Title    = string.format("[%s] Closed", raidName),
+                        Content  = string.format("Status: %s\nTrying next raid...", raidStatus or "?"),
+                        Duration = 3,
+                    })
                     pcall(updateRaidStatus)
+                    continue
                 end
             end
-        end
 
-        isInRaid        = false
-        RaidQueueThread = nil
-        pcall(updateRaidStatus)
+            if not RaidStates[raidName] then continue end
+            if pauseForGauntlet then continue end
+
+            WindUI:Notify({
+                Title    = string.format("[%s] Raid Open!", raidName),
+                Content  = "Loading team before entering...",
+                Duration = 3,
+            })
+
+            loadTeam(raidTeamSlot)
+            task.wait(1)
+            loadTeam(raidTeamSlot)
+            task.wait(2)
+
+            WindUI:Notify({
+                Title    = string.format("[%s] Entering Raid", raidName),
+                Content  = "Team loaded! Entering now...",
+                Duration = 2,
+            })
+
+            pcall(function()
+                BossRaidCreateRemote:InvokeServer(raidName, { friendsOnly = false, spawnNormal = false })
+            end)
+            task.wait(2)
+            pcall(function() GauntletStartRemote:FireServer() end)
+            task.wait(3)
+
+            pcall(function()
+                SetStateRemote:FireServer("attack", true)
+                SetStateRemote:FireServer("clicker", true)
+            end)
+
+            runSingleRaid(raidName, function() return RaidStates[raidName] and not pauseForGauntlet end)
+
+            pcall(function()
+                SetStateRemote:FireServer("attack", false)
+                SetStateRemote:FireServer("clicker", false)
+            end)
+
+            pcall(function() BossRaidLeaveRemote:FireServer() end)
+
+            WindUI:Notify({
+                Title    = string.format("[%s] Done!", raidName),
+                Content  = "Waiting 60s for go to next raid...",
+                Duration = 10,
+            })
+
+            task.wait(60)
+
+            RaidCooldowns[raidName] = tick() + RAID_COOLDOWN_DURATION
+            pcall(updateRaidStatus)
+
+            WindUI:Notify({
+                Title    = string.format("[%s] CD 20min", raidName),
+                Content  = "Checking next raid...",
+                Duration = 3,
+            })
+        end
     end)
 end
 
-local function stopAllRaids()
-    for k in pairs(RaidStates) do RaidStates[k] = false end
-    if RaidQueueThread then
-        task.cancel(RaidQueueThread)
-        RaidQueueThread = nil
+local function stopQueueIfEmpty()
+    if #getActiveRaids() == 0 then
+        isQueueRunning = false
+        if queueThread then
+            pcall(function() task.cancel(queueThread) end)
+            queueThread = nil
+        end
     end
-    isInRaid = false
+end
+
+local function enableRaid(raidName)
+    RaidStates[raidName] = true
+    startQueueRunner()
+    pcall(updateRaidStatus)
+end
+
+local function disableRaid(raidName)
+    RaidStates[raidName]    = false
+    RaidCooldowns[raidName] = nil
+    stopQueueIfEmpty()
     pcall(updateRaidStatus)
 end
 
@@ -1209,8 +1308,11 @@ end
 local function getCurrentFloor()
     for _, v in ipairs(game:GetDescendants()) do
         if v:IsA("TextLabel") then
-            local floor = tostring(v.Text or ""):match("Floor%s*(%d+)")
-            if floor then return tonumber(floor) end
+            local text = tostring(v.Text or "")
+            if text:find("Floor") then
+                local floor = text:match("Floor%s*(%d+)")
+                if floor then return tonumber(floor) end
+            end
         end
     end
     return 0
@@ -1218,7 +1320,8 @@ end
 
 local GauntletLeaveRemote
 pcall(function()
-    GauntletLeaveRemote = RemoContainer:FindFirstChild("gauntlet.leave")
+    GauntletLeaveRemote = RemoContainer:FindFirstChild("gauntlet.leaveGauntlet")
+                       or RemoContainer:FindFirstChild("gauntlet.leave")
                        or RemoContainer:FindFirstChild("lobbies.leave")
                        or RemoContainer:FindFirstChild("gauntlet.quit")
 end)
@@ -1242,8 +1345,8 @@ local function leaveGauntlet()
         end
     end
     pcall(function()
-        local lr = RemoContainer:FindFirstChild("lobbies.leave")
-        if lr then lr:FireServer() end
+        local leaveRemote = RemoContainer:FindFirstChild("lobbies.leave")
+        if leaveRemote then leaveRemote:FireServer() end
     end)
 end
 
@@ -1294,13 +1397,13 @@ local function teleportAndInteractCards(cardsObj)
         if child:IsA("BasePart") then
             pcall(function() local cd = child:FindFirstChildOfClass("ClickDetector") if cd then fireclickdetector(cd) end end)
             pcall(function() local pp = child:FindFirstChildOfClass("ProximityPrompt") if pp then fireproximityprompt(pp) end end)
-            pcall(function() local h = player.Character and player.Character:FindFirstChild("HumanoidRootPart") if h then child.Touched:Fire(h) end end)
+            pcall(function() local hrp2 = player.Character and player.Character:FindFirstChild("HumanoidRootPart") if hrp2 then child.Touched:Fire(hrp2) end end)
         end
     end
     if cardsObj:IsA("BasePart") then
         pcall(function() local cd = cardsObj:FindFirstChildOfClass("ClickDetector") if cd then fireclickdetector(cd) end end)
         pcall(function() local pp = cardsObj:FindFirstChildOfClass("ProximityPrompt") if pp then fireproximityprompt(pp) end end)
-        pcall(function() local h = player.Character and player.Character:FindFirstChild("HumanoidRootPart") if h then cardsObj.Touched:Fire(h) end end)
+        pcall(function() local hrp2 = player.Character and player.Character:FindFirstChild("HumanoidRootPart") if hrp2 then cardsObj.Touched:Fire(hrp2) end end)
     end
 end
 
@@ -1374,7 +1477,6 @@ local function doCardSelection()
 end
 
 local function attackNearestEnemyOnce()
-    if isInRaid then return end   -- ★
     if not EnemiesFolder then return end
     local myPos = (player.Character and player.Character:FindFirstChild("HumanoidRootPart")
         and player.Character.HumanoidRootPart.Position) or Vector3.zero
@@ -1393,58 +1495,180 @@ local function attackNearestEnemyOnce()
     local myUnits   = getMyUnits()
     local targetPos = getEnemyCFrame(best)
     if targetPos then
-        if hrp then
-            hrp.CFrame = targetPos * CFrame.new(0, 5, 0)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-        end
+        if hrp then hrp.CFrame = targetPos * CFrame.new(0, 5, 0) hrp.AssemblyLinearVelocity = Vector3.zero end
         teleportUnitsTo(targetPos)
         pcall(function() SendUnitRemote:FireServer(best.Name, myUnits) end)
     end
 end
 
+
+local function runOneGauntletRound()
+    WindUI:Notify({
+        Title   = "Gauntlet",
+        Content = "Loading team...",
+        Duration = 2,
+    })
+    loadTeam(gauntletTeamSlot)
+    task.wait(1)
+    loadTeam(gauntletTeamSlot)
+    task.wait(2)
+
+    pcall(function()
+        GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false })
+    end)
+    task.wait(1.5)
+    pcall(function() GauntletStartRemote:FireServer() end)
+    task.wait(2)
+
+    pcall(function()
+        SetStateRemote:FireServer("attack", true)
+        SetStateRemote:FireServer("clicker", true)
+    end)
+
+    task.wait(3)
+
+    local lastCardFloor = -1
+    local attackTick    = 0
+
+    while isGauntletFarm do
+        local currentFloor = getCurrentFloor()
+
+        if isGauntletAutoLeave and currentFloor > 0 and currentFloor >= gauntletMaxFloor then
+            pcall(function()
+                SetStateRemote:FireServer("attack", false)
+                SetStateRemote:FireServer("clicker", false)
+            end)
+            WindUI:Notify({
+                Title    = "Auto Leave",
+                Content  = string.format("Reached Floor %d / %d — waiting 5s then leaving!", currentFloor, gauntletMaxFloor),
+                Duration = 5,
+            })
+            task.wait(5)
+            leaveGauntlet()
+            task.wait(3)
+            break
+        end
+
+        if isGauntletAutoCard
+            and currentFloor > 0
+            and currentFloor % 5 == 0
+            and currentFloor ~= lastCardFloor
+        then
+            lastCardFloor = currentFloor
+            task.spawn(doCardSelection)
+        end
+
+        if tick() - attackTick >= 0.15 then
+            attackTick = tick()
+            pcall(attackNearestEnemyOnce)
+        end
+
+        task.wait(0.05)
+    end
+
+    pcall(function()
+        SetStateRemote:FireServer("attack", false)
+        SetStateRemote:FireServer("clicker", false)
+    end)
+end
+
+
+task.spawn(function()
+    task.wait(5)
+
+    while true do
+        if not isGauntletFarm then
+            task.wait(2)
+            continue
+        end
+
+        local now         = os.time()
+        local secInHour   = now % 3600
+        local secToNext   = 3600 - secInHour
+
+        if secToNext > 10 then
+            local waitTime = secToNext - 10
+            local minsLeft = math.floor(waitTime / 60)
+            local secsLeft = waitTime % 60
+            WindUI:Notify({
+                Title   = "Gauntlet Scheduler",
+                Content = string.format("Next Gauntlet in %02d:%02d", minsLeft, secsLeft),
+                Duration = math.min(waitTime, 8),
+            })
+            task.wait(waitTime)
+        end
+
+        if not isGauntletFarm then continue end
+
+        pauseForGauntlet = true
+        gauntletRunning  = true
+
+        WindUI:Notify({
+            Title   = "Gauntlet Time!",
+            Content = "Pausing Raid & AutoEgg — entering Gauntlet now!",
+            Duration = 5,
+        })
+
+        task.wait(5)
+
+        pcall(runOneGauntletRound)
+
+        gauntletRunning  = false
+        pauseForGauntlet = false
+
+        WindUI:Notify({
+            Title   = "Gauntlet Done",
+            Content = "Resuming Raid & AutoEgg!",
+            Duration = 4,
+        })
+
+        task.wait(60)
+    end
+end)
+
 -- ============================================================
 --  WIND UI — THEME
 -- ============================================================
 WindUI:AddTheme({
-    Name                         = "GhostHub",
-    Accent                       = Color3.fromHex("#1a0a0a"),
-    Background                   = Color3.fromHex("#0d0d0d"),
-    BackgroundTransparency        = 0,
-    Outline                      = Color3.fromHex("#c0392b"),
-    Text                         = Color3.fromHex("#f0f0f0"),
-    Placeholder                  = Color3.fromHex("#7a3030"),
-    Button                       = Color3.fromHex("#7f1d1d"),
-    Icon                         = Color3.fromHex("#e87070"),
-    Hover                        = Color3.fromHex("#f0f0f0"),
-    WindowBackground             = Color3.fromHex("#0d0d0d"),
-    WindowShadow                 = Color3.fromHex("#000000"),
-    DialogBackground             = Color3.fromHex("#0d0d0d"),
-    DialogBackgroundTransparency  = 0,
-    DialogTitle                  = Color3.fromHex("#f0f0f0"),
-    DialogContent                = Color3.fromHex("#cccccc"),
-    DialogIcon                   = Color3.fromHex("#e87070"),
-    WindowTopbarButtonIcon        = Color3.fromHex("#e87070"),
-    WindowTopbarTitle            = Color3.fromHex("#f0f0f0"),
-    WindowTopbarAuthor           = Color3.fromHex("#cccccc"),
-    WindowTopbarIcon             = Color3.fromHex("#f0f0f0"),
-    TabBackground                = Color3.fromHex("#1a0a0a"),
-    TabTitle                     = Color3.fromHex("#f0f0f0"),
-    TabIcon                      = Color3.fromHex("#e87070"),
-    ElementBackground            = Color3.fromHex("#1f0d0d"),
-    ElementTitle                 = Color3.fromHex("#f0f0f0"),
-    ElementDesc                  = Color3.fromHex("#aaaaaa"),
-    ElementIcon                  = Color3.fromHex("#e87070"),
-    PopupBackground              = Color3.fromHex("#0d0d0d"),
-    PopupBackgroundTransparency   = 0,
-    PopupTitle                   = Color3.fromHex("#f0f0f0"),
-    PopupContent                 = Color3.fromHex("#cccccc"),
-    PopupIcon                    = Color3.fromHex("#e87070"),
-    Toggle                       = Color3.fromHex("#7f1d1d"),
-    ToggleBar                    = Color3.fromHex("#e84040"),
-    Checkbox                     = Color3.fromHex("#7f1d1d"),
-    CheckboxIcon                 = Color3.fromHex("#f0f0f0"),
-    Slider                       = Color3.fromHex("#7f1d1d"),
-    SliderThumb                  = Color3.fromHex("#e84040"),
+    Name                          = "GhostHub",
+    Accent                        = Color3.fromHex("#1a0a0a"),
+    Background                    = Color3.fromHex("#0d0d0d"),
+    BackgroundTransparency         = 0,
+    Outline                       = Color3.fromHex("#c0392b"),
+    Text                          = Color3.fromHex("#f0f0f0"),
+    Placeholder                   = Color3.fromHex("#7a3030"),
+    Button                        = Color3.fromHex("#7f1d1d"),
+    Icon                          = Color3.fromHex("#e87070"),
+    Hover                         = Color3.fromHex("#f0f0f0"),
+    WindowBackground              = Color3.fromHex("#0d0d0d"),
+    WindowShadow                  = Color3.fromHex("#000000"),
+    DialogBackground              = Color3.fromHex("#0d0d0d"),
+    DialogBackgroundTransparency   = 0,
+    DialogTitle                   = Color3.fromHex("#f0f0f0"),
+    DialogContent                 = Color3.fromHex("#cccccc"),
+    DialogIcon                    = Color3.fromHex("#e87070"),
+    WindowTopbarButtonIcon         = Color3.fromHex("#e87070"),
+    WindowTopbarTitle             = Color3.fromHex("#f0f0f0"),
+    WindowTopbarAuthor            = Color3.fromHex("#cccccc"),
+    WindowTopbarIcon              = Color3.fromHex("#f0f0f0"),
+    TabBackground                 = Color3.fromHex("#1a0a0a"),
+    TabTitle                      = Color3.fromHex("#f0f0f0"),
+    TabIcon                       = Color3.fromHex("#e87070"),
+    ElementBackground             = Color3.fromHex("#1f0d0d"),
+    ElementTitle                  = Color3.fromHex("#f0f0f0"),
+    ElementDesc                   = Color3.fromHex("#aaaaaa"),
+    ElementIcon                   = Color3.fromHex("#e87070"),
+    PopupBackground               = Color3.fromHex("#0d0d0d"),
+    PopupBackgroundTransparency    = 0,
+    PopupTitle                    = Color3.fromHex("#f0f0f0"),
+    PopupContent                  = Color3.fromHex("#cccccc"),
+    PopupIcon                     = Color3.fromHex("#e87070"),
+    Toggle                        = Color3.fromHex("#7f1d1d"),
+    ToggleBar                     = Color3.fromHex("#e84040"),
+    Checkbox                      = Color3.fromHex("#7f1d1d"),
+    CheckboxIcon                  = Color3.fromHex("#f0f0f0"),
+    Slider                        = Color3.fromHex("#7f1d1d"),
+    SliderThumb                   = Color3.fromHex("#e84040"),
 })
 
 local Window = WindUI:CreateWindow({
@@ -1464,17 +1688,18 @@ local Window = WindUI:CreateWindow({
     HideSearchBar               = true,
     ScrollBarEnabled            = false,
 })
-Window:Tag({Title = "Beta",    Icon = "badge-alert", Color = Color3.fromHex("#0011ff"), Radius = 6})
-Window:Tag({Title = "v.0.0.2", Icon = "",            Color = Color3.fromHex("#30ff6a"), Radius = 6})
+Window:Tag({Title = "Beta",   Icon = "badge-alert", Color = Color3.fromHex("#0011ff"), Radius = 6})
+Window:Tag({Title = "v.0.0.3",Icon = "",            Color = Color3.fromHex("#30ff6a"), Radius = 6})
+
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.RightControl)
 
 local FarmTab     = Window:Tab({ Title = "Farming",  Icon = "crosshair"    })
+local RaidTab     = Window:Tab({ Title = "Raid",     Icon = "shield-alert" })
+local GauntletTab = Window:Tab({ Title = "Gauntlet", Icon = "zap"          })
 local SummonTab   = Window:Tab({ Title = "Summon",   Icon = "star"         })
 local UnitTab     = Window:Tab({ Title = "Units",    Icon = "users"        })
 local WorldTab    = Window:Tab({ Title = "Teleport", Icon = "navigation"   })
 local QuestTab    = Window:Tab({ Title = "Quest",    Icon = "scroll"       })
-local RaidTab     = Window:Tab({ Title = "Raid",     Icon = "shield-alert" })
-local GauntletTab = Window:Tab({ Title = "Gauntlet", Icon = "zap"          })
 local SettingTab  = Window:Tab({ Title = "Settings", Icon = "cog"          })
 
 -- ============================================================
@@ -1537,12 +1762,12 @@ FarmTab:Toggle({
             end)
             task.spawn(function()
                 while isAutoFarm do
-                    if isInRaid then task.wait(1) continue end   
+                    -- หยุดถ้า Gauntlet กำลังทำงาน
+                    if pauseForGauntlet then task.wait(1) continue end
                     if isAutoSnipeBoss then task.wait(1) continue end
                     if #selectedEnemyNames == 0 then task.wait(1) continue end
                     local target = findEnemyMulti(selectedEnemyNames)
-                    if target then attackTarget(target)
-                    else task.wait(0.1) end
+                    if target then attackTarget(target) else task.wait(0.1) end
                 end
                 if not isAutoSnipeBoss then
                     pcall(function()
@@ -1587,7 +1812,8 @@ FarmTab:Toggle({
             end)
             task.spawn(function()
                 while isAutoSnipeBoss do
-                    if isInRaid then task.wait(1) continue end  
+                    -- หยุดถ้า Gauntlet กำลังทำงาน
+                    if pauseForGauntlet then task.wait(1) continue end
                     if #selectedBossNames == 0 then task.wait(1) continue end
                     local myPos = (player.Character and player.Character:FindFirstChild("HumanoidRootPart")
                         and player.Character.HumanoidRootPart.Position) or Vector3.zero
@@ -1602,8 +1828,7 @@ FarmTab:Toggle({
                             end
                         end
                     end
-                    if bestTarget then attackTarget(bestTarget)
-                    else task.wait(1) end
+                    if bestTarget then attackTarget(bestTarget) else task.wait(1) end
                 end
                 if not isAutoFarm then
                     pcall(function()
@@ -1616,43 +1841,7 @@ FarmTab:Toggle({
     end
 })
 
--- ============================================================
---  SUMMON TAB
--- ============================================================
-SummonTab:Section({ Title = "Egg Settings" })
-
-local eggNames = getEggNames()
-if #eggNames == 0 then eggNames = {"(No eggs found)"} end
-if not table.find(eggNames, selectedEggName) then selectedEggName = eggNames[1] or "Nemak" end
-
-local EggDropdown = SummonTab:Dropdown({
-    Title    = "Select Egg",
-    Icon     = "package",
-    Values   = eggNames,
-    Value    = selectedEggName,
-    Multi    = false,
-    Callback = function(v)
-        if v and v ~= "" and v ~= "(No eggs found)" then
-            selectedEggName         = v
-            Options.SelectedEggName = v
-            SaveConfig()
-        end
-    end
-})
-
-SummonTab:Button({
-    Title    = "Refresh Egg List",
-    Icon     = "refresh-cw",
-    Callback = function()
-        local newNames = getEggNames()
-        if #newNames == 0 then newNames = {"(No eggs found)"} end
-        EggDropdown:Refresh(newNames)
-    end
-})
-
 SummonTab:Divider()
-
-local savedFarmCFrame = nil
 
 SummonTab:Button({
     Title    = "Save Position",
@@ -1687,27 +1876,106 @@ SummonTab:Toggle({
         SaveConfig()
         if isAutoEgg then
             task.spawn(function()
+                -- วาปไปไข่ครั้งแรก
+                local eggCF = getEggCFrame(selectedEggName)
+                local char  = player.Character
+                local hrp   = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp and eggCF then
+                    local eggPos = eggCF.Position
+                    hrp.CFrame = CFrame.lookAt(
+                        eggPos + Vector3.new(0, 10, 3),
+                        Vector3.new(eggPos.X, eggPos.Y + 10, eggPos.Z)
+                    )
+                    hrp.AssemblyLinearVelocity  = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end
+                task.wait(0.5)
+
                 while isAutoEgg do
+                    -- หยุดถ้า Gauntlet priority
                     if pauseForGauntlet then task.wait(1) continue end
 
-                    pcall(function() teleportToEgg(selectedEggName) end)
-                    task.wait(1)
-                    pcall(function() OpenEggRemote:InvokeServer(selectedEggName) end)
-                    task.wait(1)
+                    -- ถ้ามี auto farm + saved position → ทำ cycle
+                    if (isAutoFarm or isAutoSnipeBoss) and savedFarmCFrame then
 
-                    if savedFarmCFrame then
-                        local char = player.Character
-                        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                        -- วาปกลับจุด farm
+                        char = player.Character
+                        hrp  = char and char:FindFirstChild("HumanoidRootPart")
                         if hrp then
                             hrp.CFrame = savedFarmCFrame
                             hrp.AssemblyLinearVelocity  = Vector3.zero
                             hrp.AssemblyAngularVelocity = Vector3.zero
                         end
-                    end
 
-                    task.wait(3)
+                        -- farm 3 วิ
+                        local farmEnd = tick() + 3
+                        while tick() < farmEnd and isAutoEgg and not pauseForGauntlet do
+                            task.wait(0.05)
+                        end
+                        if not isAutoEgg then break end
+                        if pauseForGauntlet then continue end
+
+                        -- หยุด attackTarget ชั่วคราว
+                        isDoingEgg = true
+                        task.wait(0.15)
+
+                        -- วาปไปไข่
+                        eggCF = getEggCFrame(selectedEggName)
+                        char  = player.Character
+                        hrp   = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp and eggCF then
+                            local eggPos = eggCF.Position
+                            hrp.CFrame = CFrame.lookAt(
+                                eggPos + Vector3.new(0, 10, 3),
+                                Vector3.new(eggPos.X, eggPos.Y + 10, eggPos.Z)
+                            )
+                            hrp.AssemblyLinearVelocity  = Vector3.zero
+                            hrp.AssemblyAngularVelocity = Vector3.zero
+                        end
+                        task.wait(1.5)  -- ยืนอยู่ที่ไข่ก่อน
+
+                        -- เปิดไข่
+                        pcall(function() AutoEggRemote:FireServer(selectedEggName, true) end)
+                        task.wait(1.5)  -- รอหลัง fire ก่อนกลับ
+
+                        -- วาปกลับ saved position
+                        char = player.Character
+                        hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            hrp.CFrame = savedFarmCFrame
+                            hrp.AssemblyLinearVelocity  = Vector3.zero
+                            hrp.AssemblyAngularVelocity = Vector3.zero
+                        end
+
+                        isDoingEgg = false
+
+                    else
+                        eggCF = getEggCFrame(selectedEggName)
+                        char  = player.Character
+                        hrp   = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp and eggCF then
+                            local eggPos = eggCF.Position
+                            local myPos  = hrp.Position
+                            if (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(eggPos.X, 0, eggPos.Z)).Magnitude > 10 then
+                                hrp.CFrame = CFrame.lookAt(
+                                    eggPos + Vector3.new(0, 10, 3),
+                                    Vector3.new(eggPos.X, eggPos.Y + 10, eggPos.Z)
+                                )
+                                hrp.AssemblyLinearVelocity  = Vector3.zero
+                                hrp.AssemblyAngularVelocity = Vector3.zero
+                                task.wait(1.5)
+                            end
+                        end
+
+                        pcall(function() AutoEggRemote:FireServer(selectedEggName, true) end)
+                        task.wait(0.5)
+                    end
                 end
+
+                isDoingEgg = false
             end)
+        else
+            isDoingEgg = false
         end
     end
 })
@@ -1765,6 +2033,87 @@ UnitTab:Toggle({
     end
 })
 
+UnitTab:Divider()
+UnitTab:Section({ Title = "Team Slots" })
+
+UnitTab:Dropdown({
+    Title    = "Gauntlet Team Slot",
+    Icon     = "layers",
+    Desc     = "Load this team when entering Gauntlet",
+    Values   = TEAM_SLOTS,
+    Value    = gauntletTeamSlot,
+    Multi    = false,
+    Callback = function(v)
+        if v and v ~= "" then
+            gauntletTeamSlot         = v
+            Options.GauntletTeamSlot = v
+            SaveConfig()
+        end
+    end
+})
+
+UnitTab:Button({
+    Title    = "Load Gauntlet Team Now",
+    Icon     = "zap",
+    Desc     = "Manually load selected Gauntlet team",
+    Callback = function()
+        loadTeam(gauntletTeamSlot)
+        WindUI:Notify({ Title = "Team Loaded", Content = "Gauntlet Team Slot " .. gauntletTeamSlot .. " loaded!", Duration = 3 })
+    end
+})
+
+UnitTab:Divider()
+
+UnitTab:Dropdown({
+    Title    = "Raid Team Slot",
+    Icon     = "shield-alert",
+    Desc     = "Load this team when entering Raid",
+    Values   = TEAM_SLOTS,
+    Value    = raidTeamSlot,
+    Multi    = false,
+    Callback = function(v)
+        if v and v ~= "" then
+            raidTeamSlot         = v
+            Options.RaidTeamSlot = v
+            SaveConfig()
+        end
+    end
+})
+
+UnitTab:Button({
+    Title    = "Load Raid Team Now",
+    Icon     = "shield",
+    Desc     = "Manually load selected Raid team",
+    Callback = function()
+        loadTeam(raidTeamSlot)
+        WindUI:Notify({ Title = "Team Loaded", Content = "Raid Team Slot " .. raidTeamSlot .. " loaded!", Duration = 3 })
+    end
+})
+
+UnitTab:Divider()
+
+local manualTeamSlot = "1"
+UnitTab:Dropdown({
+    Title    = "Manual Load Any Slot",
+    Icon     = "refresh-cw",
+    Desc     = "Load any team slot manually",
+    Values   = TEAM_SLOTS,
+    Value    = "1",
+    Multi    = false,
+    Callback = function(v)
+        if v and v ~= "" then manualTeamSlot = v end
+    end
+})
+
+UnitTab:Button({
+    Title    = "Load Selected Slot",
+    Icon     = "play",
+    Callback = function()
+        loadTeam(manualTeamSlot)
+        WindUI:Notify({ Title = "Team Loaded", Content = "Team Slot " .. manualTeamSlot .. " loaded!", Duration = 3 })
+    end
+})
+
 -- ============================================================
 --  QUEST TAB
 -- ============================================================
@@ -1778,6 +2127,7 @@ if #questList == 0 or questList[1] == "(No quests found)" then
         questList = getQuestList()
     end)
 end
+
 if not table.find(questList, selectedQuestId) then selectedQuestId = questList[1] or "" end
 
 local QuestDropdown = QuestTab:Dropdown({
@@ -1802,8 +2152,10 @@ QuestTab:Button({
         task.spawn(function()
             local ok, questModule = pcall(function()
                 return require(
-                    ReplicatedStorage:WaitForChild("src"):WaitForChild("common")
-                        :WaitForChild("content"):WaitForChild("world"):WaitForChild("quests")
+                    ReplicatedStorage
+                        :WaitForChild("src"):WaitForChild("common")
+                        :WaitForChild("content"):WaitForChild("world")
+                        :WaitForChild("quests")
                 )
             end)
             if ok and questModule and questModule.questsContent then
@@ -1841,13 +2193,13 @@ QuestTab:Toggle({
                         while isAutoQuest and killCount < required do
                             local target = getTargetEnemy(enemyName)
                             if not target then task.wait(0.5) continue end
-                            local char    = player.Character
-                            local hrp     = char and char:FindFirstChild("HumanoidRootPart")
-                            local myUnits = getMyUnits()
-                            local tPos    = getEnemyCFrame(target)
-                            if tPos then
-                                if hrp then hrp.CFrame = tPos * CFrame.new(0, 5, 0) hrp.AssemblyLinearVelocity = Vector3.zero end
-                                teleportUnitsTo(tPos)
+                            local char      = player.Character
+                            local hrp       = char and char:FindFirstChild("HumanoidRootPart")
+                            local myUnits   = getMyUnits()
+                            local targetPos = getEnemyCFrame(target)
+                            if targetPos then
+                                if hrp then hrp.CFrame = targetPos * CFrame.new(0, 5, 0) hrp.AssemblyLinearVelocity = Vector3.zero end
+                                teleportUnitsTo(targetPos)
                                 pcall(function() SendUnitRemote:FireServer(target.Name, myUnits) end)
                             end
                             while isAutoQuest and target and target.Parent do
@@ -1887,7 +2239,7 @@ QuestTab:Toggle({
 })
 
 -- ============================================================
---  RAID TAB UI
+--  RAID TAB — STATUS
 -- ============================================================
 RaidTab:Section({ Title = "Raid Status" })
 local raidStatusLabel = RaidTab:Section({ Title = "Enable a raid below to start" })
@@ -1902,12 +2254,11 @@ updateRaidStatus = function()
                 local remaining = math.ceil(cdEnd - now)
                 local mins = math.floor(remaining / 60)
                 local secs = remaining % 60
-                table.insert(lines, string.format("[COOLDOWN] %s — %02d:%02d left", raidName, mins, secs))
+                table.insert(lines, string.format("[CD] %s — %02d:%02d", raidName, mins, secs))
+            elseif pauseForGauntlet then
+                table.insert(lines, string.format("[⏸] %s — Paused (Gauntlet)", raidName))
             else
-                local status = getRaidStatusText(raidName)
-                local open   = isRaidOpen(raidName)
-                local prefix = open and "[Open]" or "[Closed]"
-                table.insert(lines, string.format("%s %s — %s", prefix, raidName, status))
+                table.insert(lines, string.format("[ON] %s — Queued", raidName))
             end
         end
     end
@@ -1919,13 +2270,10 @@ updateRaidStatus = function()
 end
 
 task.spawn(function()
-    while true do
-        task.wait(5)
-        pcall(updateRaidStatus)
-    end
+    while true do task.wait(5) pcall(updateRaidStatus) end
 end)
 
-RaidTab:Section({ Title = "Auto Raid" })
+RaidTab:Section({ Title = "Auto Raid (Multi-Select)" })
 
 RaidTab:Toggle({
     Title    = "Destroyed Nemak",
@@ -1933,11 +2281,7 @@ RaidTab:Toggle({
     Type     = "Checkbox",
     Value    = false,
     Callback = function(v)
-        RaidStates["Destroyed Nemak"] = v
-        if v then startRaidQueueIfNeeded()
-        else
-            if #getActiveRaids() == 0 then stopAllRaids() else pcall(updateRaidStatus) end
-        end
+        if v then enableRaid("Destroyed Nemak") else disableRaid("Destroyed Nemak") end
     end
 })
 
@@ -1947,11 +2291,7 @@ RaidTab:Toggle({
     Type     = "Checkbox",
     Value    = false,
     Callback = function(v)
-        RaidStates["Red Ribbon Base"] = v
-        if v then startRaidQueueIfNeeded()
-        else
-            if #getActiveRaids() == 0 then stopAllRaids() else pcall(updateRaidStatus) end
-        end
+        if v then enableRaid("Red Ribbon Base") else disableRaid("Red Ribbon Base") end
     end
 })
 
@@ -1961,11 +2301,7 @@ RaidTab:Toggle({
     Type     = "Checkbox",
     Value    = false,
     Callback = function(v)
-        RaidStates["Clan Hideout"] = v
-        if v then startRaidQueueIfNeeded()
-        else
-            if #getActiveRaids() == 0 then stopAllRaids() else pcall(updateRaidStatus) end
-        end
+        if v then enableRaid("Clan Hideout") else disableRaid("Clan Hideout") end
     end
 })
 
@@ -1975,11 +2311,7 @@ RaidTab:Toggle({
     Type     = "Checkbox",
     Value    = false,
     Callback = function(v)
-        RaidStates["Desert Kingdom"] = v
-        if v then startRaidQueueIfNeeded()
-        else
-            if #getActiveRaids() == 0 then stopAllRaids() else pcall(updateRaidStatus) end
-        end
+        if v then enableRaid("Desert Kingdom") else disableRaid("Desert Kingdom") end
     end
 })
 
@@ -1997,7 +2329,8 @@ RaidTab:Button({
 -- ============================================================
 GauntletTab:Section({ Title = "Card Priority" })
 
-for i = 1, 5 do
+local prioritySlots = 5
+for i = 1, prioritySlots do
     local slotIndex = i
     GauntletTab:Dropdown({
         Title    = "Priority " .. i,
@@ -2054,95 +2387,36 @@ GauntletTab:Toggle({
     end
 })
 
+-- *** Gauntlet toggle ตอนนี้แค่เปิด/ปิด scheduler เท่านั้น ***
+-- การทำงานจริงถูกย้ายไปที่ Gauntlet Scheduler ด้านบน
 GauntletTab:Toggle({
     Title    = "Auto Farm Gauntlet",
     Icon     = "zap",
+    Desc     = "Auto-starts every xx:00 — always pauses Raid & Egg first",
     Type     = "Checkbox",
     Value    = Options.AutoGauntlet or false,
     Callback = function(v)
         isGauntletFarm       = v
         Options.AutoGauntlet = v
         SaveConfig()
-        if not isGauntletFarm then return end
-
-        task.spawn(function()
-            local function waitForNextMinute()
-                local secLeft = 60 - (tick() % 60)
-                if secLeft < 58 then
-                    WindUI:Notify({ Title = "Gauntlet", Content = string.format("Waiting %ds for next minute...", math.floor(secLeft)), Duration = math.min(secLeft, 6) })
-                    task.wait(secLeft)
-                end
+        if v then
+            WindUI:Notify({
+                Title   = "Gauntlet Scheduler ON",
+                Content = "Gauntlet will auto-start every xx:00\nRaid & AutoEgg will pause during Gauntlet",
+                Duration = 6,
+            })
+        else
+            WindUI:Notify({
+                Title   = "Gauntlet Scheduler OFF",
+                Content = "Scheduler disabled",
+                Duration = 3,
+            })
+            -- คืนค่า pause flag ถ้า toggle ปิดขณะ gauntlet ค้างอยู่
+            if pauseForGauntlet then
+                pauseForGauntlet = false
+                gauntletRunning  = false
             end
-
-            waitForNextMinute()
-
-            while isGauntletFarm do
-                -- ★ ถ้า raid กำลังทำงานให้หยุดรอ
-                if isInRaid then task.wait(2) continue end
-
-                pcall(function() GauntletCreateRemote:InvokeServer("Normal", { friendsOnly = false }) end)
-                task.wait(1.5)
-                pcall(function() GauntletStartRemote:FireServer() end)
-                task.wait(2)
-                pcall(function()
-                    SetStateRemote:FireServer("attack", true)
-                    SetStateRemote:FireServer("clicker", true)
-                end)
-                task.wait(3)
-
-                local lastCardFloor = -1
-                local attackTick    = 0
-
-                while isGauntletFarm do
-                    if isInRaid then
-                        pcall(function()
-                            SetStateRemote:FireServer("attack", false)
-                            SetStateRemote:FireServer("clicker", false)
-                        end)
-                        leaveGauntlet()
-                        task.wait(3)
-                        break
-                    end
-
-                    local currentFloor = getCurrentFloor()
-
-                    if isGauntletAutoLeave and currentFloor > 0 and currentFloor >= gauntletMaxFloor then
-                        pcall(function()
-                            SetStateRemote:FireServer("attack", false)
-                            SetStateRemote:FireServer("clicker", false)
-                        end)
-                        WindUI:Notify({
-                            Title   = "Auto Leave",
-                            Content = string.format("Reached Floor %d / %d — waiting 5s then leaving!", currentFloor, gauntletMaxFloor),
-                            Duration = 5,
-                        })
-                        task.wait(5)
-                        leaveGauntlet()
-                        task.wait(3)
-                        break
-                    end
-
-                    if isGauntletAutoCard and currentFloor > 0 and currentFloor % 5 == 0 and currentFloor ~= lastCardFloor then
-                        lastCardFloor = currentFloor
-                        task.spawn(doCardSelection)
-                    end
-
-                    if tick() - attackTick >= 0.15 then
-                        attackTick = tick()
-                        pcall(attackNearestEnemyOnce)
-                    end
-
-                    task.wait(0.05)
-                end
-
-                task.wait(3)
-            end
-
-            pcall(function()
-                SetStateRemote:FireServer("attack", false)
-                SetStateRemote:FireServer("clicker", false)
-            end)
-        end)
+        end
     end
 })
 
@@ -2334,10 +2608,7 @@ SettingTab:Toggle({
     Icon     = "shield",
     Type     = "Checkbox",
     Value    = Options.AntiAFK or false,
-    Callback = function(v)
-        Options.AntiAFK = v
-        SaveConfig()
-    end
+    Callback = function(v) Options.AntiAFK = v SaveConfig() end
 })
 
 SettingTab:Toggle({
@@ -2394,12 +2665,12 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent         = (gethui and gethui()) or CoreGui
 
 local ToggleBtn = Instance.new("ImageButton")
-ToggleBtn.Parent               = ScreenGui
+ToggleBtn.Parent                 = ScreenGui
 ToggleBtn.BackgroundTransparency = 1
-ToggleBtn.Position             = UDim2.new(0.5, 0, 0, 40)
-ToggleBtn.Size                 = UDim2.new(0, 50, 0, 50)
-ToggleBtn.Image                = "rbxassetid://110552700896064"
-ToggleBtn.AnchorPoint          = Vector2.new(0.5, 0.5)
+ToggleBtn.Position               = UDim2.new(0.5, 0, 0, 40)
+ToggleBtn.Size                   = UDim2.new(0, 50, 0, 50)
+ToggleBtn.Image                  = "rbxassetid://110552700896064"
+ToggleBtn.AnchorPoint            = Vector2.new(0.5, 0.5)
 Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)
 
 local s2 = Instance.new("UIStroke", ToggleBtn)
