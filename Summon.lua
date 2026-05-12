@@ -1840,6 +1840,39 @@ FarmTab:Toggle({
         end
     end
 })
+-- ============================================================
+--  SUMMON TAB
+-- ============================================================
+SummonTab:Section({ Title = "Summon EGG" })
+
+local eggNames = getEggNames()
+if #eggNames == 0 then eggNames = {"(No eggs found)"} end
+if not table.find(eggNames, selectedEggName) then selectedEggName = eggNames[1] or "Nemak" end
+
+local EggDropdown = SummonTab:Dropdown({
+    Title    = "Select Egg",
+    Icon     = "package",
+    Values   = eggNames,
+    Value    = selectedEggName,
+    Multi    = false,
+    Callback = function(v)
+        if v and v ~= "" and v ~= "(No eggs found)" then
+            selectedEggName         = v
+            Options.SelectedEggName = v
+            SaveConfig()
+        end
+    end
+})
+
+SummonTab:Button({
+    Title    = "Refresh Egg List",
+    Icon     = "refresh-cw",
+    Callback = function()
+        local newNames = getEggNames()
+        if #newNames == 0 then newNames = {"(No eggs found)"} end
+        EggDropdown:Refresh(newNames)
+    end
+})
 
 SummonTab:Divider()
 
