@@ -32,7 +32,7 @@ local CONFIG_FOLDER = "GhostHub"
 local CONFIG_FILE   = "GhostHub/AW3_config.json"
 
 local Options = {
-    ToggleUIKey        = "RightControl",
+    ToggleUIKey        = "LeftControl",
     AntiAFK            = false,
     AutoRejoin         = false,
     SelectedEggName    = "Nemak",
@@ -1691,7 +1691,7 @@ local Window = WindUI:CreateWindow({
 Window:Tag({Title = "Beta",   Icon = "badge-alert", Color = Color3.fromHex("#0011ff"), Radius = 6})
 Window:Tag({Title = "v.0.0.3",Icon = "",            Color = Color3.fromHex("#30ff6a"), Radius = 6})
 
-Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.RightControl)
+Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftControl)
 
 local FarmTab     = Window:Tab({ Title = "Farming",  Icon = "crosshair"    })
 local RaidTab     = Window:Tab({ Title = "Raid",     Icon = "shield-alert" })
@@ -2627,7 +2627,7 @@ SettingTab:Section({ Title = "General" })
 SettingTab:Keybind({
     Title    = "Toggle UI Key",
     Desc     = "Keybind to show/hide the window",
-    Value    = Options.ToggleUIKey or "RightControl",
+    Value    = Options.ToggleUIKey or "LeftControl",
     Callback = function(v)
         Options.ToggleUIKey = tostring(v)
         SaveConfig()
@@ -2730,7 +2730,7 @@ UserInputService.InputEnded:Connect(function(i)
             dragging = false
             TweenService:Create(ToggleBtn, TweenInfo.new(0.2, Enum.EasingStyle.Back), {Size = UDim2.new(0, 50, 0, 50)}):Play()
             if dragStart and (i.Position - dragStart).Magnitude < 10 then
-                local key = Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.RightControl
+                local key = Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftControl
                 VirtualInputManager:SendKeyEvent(true,  key, false, game)
                 task.wait(0.05)
                 VirtualInputManager:SendKeyEvent(false, key, false, game)
