@@ -67,7 +67,7 @@ local Options = {
     AutoEscortStart      = false,
     AutoEscortReplay     = false,
     AutoEscortAccept     = false,
-    AutoJoinEscort       = false,  -- NEW
+    AutoJoinEscort       = false,  
     SelectedEscortMap    = "Journeys End",
     AutoInfiltration     = false,
     InfiltName           = "Rain Village",
@@ -183,7 +183,7 @@ local Thread = {
     escortStart  = nil,
     escortReplay = nil,
     escortAccept = nil,
-    escortJoin   = nil,  -- NEW
+    escortJoin   = nil,  
     queueRunner  = nil,
     infiltration = nil,
 }
@@ -529,13 +529,7 @@ local function findNearestEnemyInRange(range)
     return best
 end
 
--- allowList: optional list of names the target must still match each tick.
--- If the target no longer matches (e.g. user changed the dropdown mid-fight,
--- or the server recycled this Instance into a different enemy), attackTarget
--- breaks out immediately instead of staying locked onto it forever.
--- maxSeconds: hard timeout — if a single target take longer than this without
--- dying (stuck/desynced enemy, recycled Instance that never updates `dead`),
--- give up and let the outer loop re-pick a fresh target.
+
 local function attackTarget(target, allowListGetter, maxSeconds)
     local lastActionTick = 0
     local startTick       = tick()
@@ -1471,7 +1465,7 @@ local function startAutoJoinEscort()
                 if not ok then
                     pcall(function() Remote.LobbiesJoin:FireServer(lobbyId) end)
                 end
-                task.wait(5)  -- รอให้โหลดห้องก่อน loop ใหม่
+                task.wait(5)  
             else
                 task.wait(1)
             end
