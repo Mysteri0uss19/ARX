@@ -1816,14 +1816,13 @@ local function startStandAtBarricade()
                     notified = true
                     WindUI:Notify({
                         Title    = "[Invasion] Standing at Barricade",
-                        Content  = "ยืนตำแหน่ง Barricade แล้ว",
                         Duration = 3,
                     })
                 end
             else
                 notified = false
             end
-            task.wait(0.5)
+            task.wait(0.1)
         end
     end)
 end
