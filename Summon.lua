@@ -1896,14 +1896,14 @@ local function farmInvasionEnemies(isActiveFunc)
                         hrp.AssemblyAngularVelocity = Vector3.zero
                     end
                 end
-                task.wait(0.2)
+                task.wait(0.1)
                 continue
             end
 
             local tPos = getEnemyCFrame(target)
             if tPos and hrp then
                 if (hrp.Position - tPos.Position).Magnitude > 3000 then
-                    task.wait(0.2) continue
+                    task.wait(0.1) continue
                 end
                 hrp.CFrame = tPos * CFrame.new(0, 5, 0)
                 hrp.AssemblyLinearVelocity  = Vector3.zero
@@ -3028,6 +3028,15 @@ Tab.Invasion:Toggle({
         State.isAutoInvasionCard = v
         Options.AutoInvasionCard = v
         SaveConfig()
+        if v then
+            task.spawn(function()
+                while State.isAutoInvasionCard and isRunning() do
+                    task.spawn(doInvasionCardSelection)
+                    task.wait(5)
+                end
+            end)
+        else
+        end
     end
 })
 
