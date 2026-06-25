@@ -1,3 +1,31 @@
+if getgenv().GhostHubAW3_Running then
+    getgenv().GhostHubAW3_Running = false
+end
+
+if getgenv().GhostHubAW3_Window then
+    pcall(function() getgenv().GhostHubAW3_Window:Destroy() end)
+    getgenv().GhostHubAW3_Window = nil
+end
+
+local Players_ = game:GetService("Players")
+local CoreGui_ = game:GetService("CoreGui")
+pcall(function()
+    local old = CoreGui_:FindFirstChild("AW3ToggleGui")
+    if old then old:Destroy() end
+end)
+pcall(function()
+    local old = Players_.LocalPlayer.PlayerGui:FindFirstChild("AW3ToggleGui")
+    if old then old:Destroy() end
+end)
+
+task.wait(0.2)
+
+getgenv().GhostHubAW3_Running = true
+
+local function isRunning()
+    return getgenv().GhostHubAW3_Running == true
+end
+
 if game.PlaceId ~= 18923620224 then
     warn("Failed to load: This script only supports Anime Warriors III")
     return
@@ -67,12 +95,19 @@ local Options = {
     AutoEscortStart      = false,
     AutoEscortReplay     = false,
     AutoEscortAccept     = false,
-    AutoJoinEscort       = false,  
+    AutoJoinEscort       = false,
     SelectedEscortMap    = "Journeys End",
     AutoInfiltration     = false,
     InfiltName           = "Rain Village",
     InfiltPath           = "I",
     InfiltTeamSlot       = "1",
+    -- Invasion
+    AutoInvasion         = false,
+    AutoJoinInvasion     = false,
+    AutoInvasionCard     = false,
+    InvasionCardPriority = {},
+    InvasionTeamSlot     = "1",
+    AutoInvasionReplay = false,
 }
 
 local function SaveConfig()
@@ -114,7 +149,7 @@ local Remote = {
     ToolbarEquip       = RemoContainer:WaitForChild("toolbar.equip"),
     GauntletCreate     = RemoContainer:WaitForChild("gauntlet.create"),
     LobbiesStart       = RemoContainer:WaitForChild("lobbies.start"),
-    LobbiesJoin        = RemoContainer:WaitForChild("lobbies.join"),  -- NEW
+    LobbiesJoin        = RemoContainer:WaitForChild("lobbies.join"),
     GauntletCards      = RemoContainer:WaitForChild("gauntlet.displayCards"),
     GauntletVote       = RemoContainer:WaitForChild("gauntlet.voteCard"),
     GauntletClear      = RemoContainer:WaitForChild("gauntlet.clearButton"),
@@ -130,6 +165,16 @@ local Remote = {
                       or RemoContainer:FindFirstChild("gauntlet.leave")
                       or RemoContainer:FindFirstChild("lobbies.leave")
                       or RemoContainer:FindFirstChild("gauntlet.quit"),
+    -- Invasion
+    InvasionCreate     = RemoContainer:FindFirstChild("invasions.create"),
+    InvasionLeave      = RemoContainer:FindFirstChild("invasions.leave")
+                      or RemoContainer:FindFirstChild("lobbies.leave"),
+    InvasionCards      = RemoContainer:FindFirstChild("invasions.displayCards")
+                      or RemoContainer:FindFirstChild("gauntlet.displayCards"),
+    InvasionVote       = RemoContainer:FindFirstChild("invasions.voteCard")
+                      or RemoContainer:FindFirstChild("gauntlet.voteCard"),
+    InvasionReplay = RemoContainer:FindFirstChild("invasions.replay"),
+
 }
 
 -- ============================================================
@@ -158,7 +203,7 @@ local State = {
     isAutoEscortStart   = Options.AutoEscortStart  or false,
     isAutoEscortReplay  = Options.AutoEscortReplay or false,
     isAutoEscortAccept  = Options.AutoEscortAccept or false,
-    isAutoJoinEscort    = Options.AutoJoinEscort   or false,  -- NEW
+    isAutoJoinEscort    = Options.AutoJoinEscort   or false,
     isAutoRaidEnabled   = Options.AutoRaid or false,
     isQueueRunning      = false,
     isAutoInfiltration  = Options.AutoInfiltration or false,
@@ -173,19 +218,30 @@ local State = {
     gauntletTeamSlot    = Options.GauntletTeamSlot or "1",
     raidTeamSlot        = Options.RaidTeamSlot     or "1",
     infiltTeamSlot      = Options.InfiltTeamSlot   or "1",
+    -- Invasion
+    isAutoInvasion      = Options.AutoInvasion      or false,
+    isAutoJoinInvasion  = Options.AutoJoinInvasion  or false,
+    isAutoInvasionCard  = Options.AutoInvasionCard  or false,
+    invasionCardPriority= Options.InvasionCardPriority or {},
+    invasionTeamSlot    = Options.InvasionTeamSlot  or "1",
+    isInvasionCardSel   = false,
+    AutoInvasionReplay = false,
 }
 
 -- ============================================================
 --  THREADS
 -- ============================================================
 local Thread = {
-    cartFollow   = nil,
-    escortStart  = nil,
-    escortReplay = nil,
-    escortAccept = nil,
-    escortJoin   = nil,  
-    queueRunner  = nil,
-    infiltration = nil,
+    cartFollow    = nil,
+    escortStart   = nil,
+    escortReplay  = nil,
+    escortAccept  = nil,
+    escortJoin    = nil,
+    queueRunner   = nil,
+    infiltration  = nil,
+    invasion      = nil,
+    invasionJoin  = nil,
+    invasionReplay = nil,
 }
 
 -- ============================================================
@@ -196,6 +252,7 @@ local Data = {
     RaidNamesList       = {},
     RaidStates          = {},
     RaidCooldowns       = {},
+    RaidNoPortal        = {},
     WorldsData          = {},
     QuestData           = {},
     QuestLabelMap       = {},
@@ -205,6 +262,17 @@ local Data = {
     ALL_CARDS           = {},
     CARD_WEIGHTS        = {},
     EggsFolder          = RS:WaitForChild("Assets"):WaitForChild("Eggs"),
+    -- Invasion
+    INVASION_CARDS      = {
+        "Overflowing Wealth",
+        "Battle Momentum",
+        "Boss Killer",
+        "Warrior Blessing",
+        "Warrior Reinforcement",
+        "Barricade Repair",
+        "Espionage",
+    },
+    INVASION_NAME       = "Dark Matter Invasion",
 }
 
 -- ============================================================
@@ -225,13 +293,14 @@ local CONST = {
     BOSS_LIST = {
         "Genyu","Freeze","Freeze (2nd)","Android 17",
         "Cel (Prime)","Super Cel (Prime)","Gurra",
-        "Orochi (Disguised)","Orochi","Ohem","Enil","Enil (Storm)"
+        "Orochi (Disguised)","Orochi","Ohem","Enil","Enil (Storm)",
+        "Pride (Summer)","Pride V2 (Summer)","Pride V3 (The One)",
     },
     RAID_PORTAL_PATHS = {
-        ["Desert Kingdom"]  = {"Sky Island",  "Components","Portal","sign","SurfaceGui","TextLabel"},
-        ["Clan Hideout"]    = {"Sand Village","Components","Portal","sign","SurfaceGui","TextLabel"},
-        ["Destroyed Nemak"] = {"Planet Nemak","Components","Portal","sign","SurfaceGui","TextLabel"},
-        ["Red Ribbon Base"] = {"Future City", "Components","Portal","sign","SurfaceGui","TextLabel"},
+        ["Desert Kingdom"]  = {"Sky Island",   "Components","Portal","sign","SurfaceGui","TextLabel"},
+        ["Clan Hideout"]    = {"Sand Village", "Components","Portal","sign","SurfaceGui","TextLabel"},
+        ["Destroyed Nemak"] = {"Planet Nemak", "Components","Portal","sign","SurfaceGui","TextLabel"},
+        ["Red Ribbon Base"] = {"Future City",  "Components","Portal","sign","SurfaceGui","TextLabel"},
     },
 }
 
@@ -311,6 +380,30 @@ local function getTierString(label)
     return "common"
 end
 
+local function startAutoInvasionReplay()
+    if Thread.invasionReplay then
+        pcall(function() task.cancel(Thread.invasionReplay) end)
+        Thread.invasionReplay = nil
+    end
+    Thread.invasionReplay = task.spawn(function()
+        while State.isAutoInvasionReplay and isRunning() do
+            pcall(function()
+                if Remote.InvasionReplay then
+                    Remote.InvasionReplay:InvokeServer()
+                end
+            end)
+            task.wait(20)
+        end
+    end)
+end
+
+local function stopAutoInvasionReplay()
+    State.isAutoInvasionReplay = false
+    if Thread.invasionReplay then
+        pcall(function() task.cancel(Thread.invasionReplay) end)
+        Thread.invasionReplay = nil
+    end
+end
 -- ============================================================
 --  POSITION HELPERS
 -- ============================================================
@@ -528,7 +621,6 @@ local function findNearestEnemyInRange(range)
     end
     return best
 end
-
 
 local function attackTarget(target, allowListGetter, maxSeconds)
     local lastActionTick = 0
@@ -754,6 +846,14 @@ if next(Data.WorldsData) == nil then
         ["Sky Island"]   = { displayName="Sky Island",   order=4,
             eggs={"Sky"},   raids={"Desert Kingdom"},
             enemies={normal={"Sky Guard","Saturn","Geda","Shuri"}, miniBoss={"Ohem"}, boss={"Enil"}} },
+        ["Summer Isles"] = { displayName="Summer Isles", order=6,
+            eggs={}, raids={"Sunshine Raid"},
+            enemies={
+                normal   = {"Kisamy (Summer)","Ranji (Summer)"},
+                miniBoss = {},
+                boss     = {"Pride (Summer)","Pride V2 (Summer)","Pride V3 (The One)"},
+            }
+        },
     }
 end
 
@@ -794,7 +894,7 @@ end
 --  RAID DATA
 -- ============================================================
 local function loadRaidModule()
-    local newCfg, newNames = {}, {}
+    local newCfg, newNames, newNoPortal = {}, {}, {}
     local ok, mod = pcall(function()
         return require(RS:WaitForChild("src"):WaitForChild("common")
             :WaitForChild("content"):WaitForChild("gamemodes"):WaitForChild("raids"))
@@ -803,21 +903,31 @@ local function loadRaidModule()
         for rn, d in pairs(mod.raidsContent) do
             local cfg = d.config or {}
             newCfg[rn] = {light=cfg.lightEnemy or {}, tank=cfg.tankEnemy, boss=cfg.bossEnemy}
+            if d.noPortal then newNoPortal[rn] = true end
             table.insert(newNames, rn)
         end
     end
     local fallback = {
-        ["Destroyed Nemak"] = {light={"Barta","Jays"}, tank=nil, boss=nil},
-        ["Red Ribbon Base"]  = {light={"Plasma"},       tank=nil, boss=nil},
-        ["Clan Hideout"]     = {light={"Itochi (Crow)"},tank=nil, boss=nil},
-        ["Desert Kingdom"]   = {light={"Matsui","Ibiboro"}, tank="Water Tank", boss=nil},
+        ["Destroyed Nemak"] = {light={"Barta","Jays"},         tank=nil, boss=nil},
+        ["Red Ribbon Base"]  = {light={"Plasma"},               tank=nil, boss=nil},
+        ["Clan Hideout"]     = {light={"Itochi (Crow)"},        tank=nil, boss=nil},
+        ["Desert Kingdom"]   = {light={"Matsui","Ibiboro"},     tank="Water Tank", boss=nil},
+        ["Sunshine Raid"]    = {light={"Kisamy (Summer)","Ranji (Summer)"}, tank=nil, boss=nil},
     }
+    local fallbackNoPortal = { ["Sunshine Raid"] = true }
     for name, cfg in pairs(fallback) do
-        if not newCfg[name] then newCfg[name] = cfg table.insert(newNames, name) end
+        if not newCfg[name] then
+            newCfg[name] = cfg
+            table.insert(newNames, name)
+        end
+    end
+    for name, v in pairs(fallbackNoPortal) do
+        if newNoPortal[name] == nil then newNoPortal[name] = v end
     end
     table.sort(newNames)
     Data.RaidConfig    = newCfg
     Data.RaidNamesList = newNames
+    Data.RaidNoPortal  = newNoPortal
 end
 loadRaidModule()
 
@@ -978,6 +1088,14 @@ local function isRaidOpen(raidName)
 end
 
 local function checkRaidOpenAtPortal(raidName)
+    if Data.RaidNoPortal[raidName] then
+        WindUI:Notify({
+            Title   = string.format("[%s] No Portal", raidName),
+            Content = "noPortal raid — joining directly!",
+            Duration = 3,
+        })
+        return true, "Open", nil, true
+    end
     local teleported = false
     pcall(function() teleported = teleportToRaidPortal(raidName) end)
     task.wait(0.75)
@@ -1319,7 +1437,7 @@ local function startQueueRunner()
             task.wait(1)
             local raidOpen, raidStatus, cdLeft, teleported = checkRaidOpenAtPortal(raidName)
             pcall(updateRaidStatus)
-            if not teleported then
+            if not teleported and not Data.RaidNoPortal[raidName] then
                 WindUI:Notify({Title=string.format("[%s] Portal Not Found",raidName), Content="Skipping...", Duration=4})
                 Data.RaidCooldowns[raidName] = tick() + 20
                 resumeFarm() continue
@@ -1410,10 +1528,8 @@ local function findEscortCart()
     return nil
 end
 
-
-
 -- ============================================================
---  AUTO JOIN ESCORT 
+--  AUTO JOIN ESCORT
 -- ============================================================
 local LobbiesStore = nil
 pcall(function()
@@ -1428,7 +1544,7 @@ pcall(function()
     end
 end)
 
-local function getEscortLobbies()
+local function getLobbiesState()
     if not LobbiesStore then return nil end
     local ok, state = pcall(LobbiesStore)
     if ok and type(state) == "table" then return state end
@@ -1436,20 +1552,394 @@ local function getEscortLobbies()
 end
 
 local function findOpenEscortLobbyId()
-    local state = getEscortLobbies()
+    local state = getLobbiesState()
     if not state then return nil end
     for lobbyId, lobby in pairs(state) do
         if type(lobby) == "table" and lobby.type == "escort" then
-            local players   = lobby.players or {}
-            local maxP      = lobby.maxPlayers or 4
-            if #players < maxP then
-                return lobby.id or lobbyId
+            local players = lobby.players or {}
+            local maxP    = lobby.maxPlayers or 4
+            if #players < maxP then return lobby.id or lobbyId end
+        end
+    end
+    return nil
+end
+
+-- ============================================================
+--  AUTO JOIN INVASION
+-- ============================================================
+local function findOpenInvasionLobbyId()
+    local state = getLobbiesState()
+    if not state then return nil end
+    for lobbyId, lobby in pairs(state) do
+        if type(lobby) == "table" then
+            local lobbyType = (lobby.type or ""):lower()
+            local lobbyName = (lobby.name or ""):lower()
+            if lobbyType:find("invasion") or lobbyName:find("invasion") or lobbyName:find("dark matter") then
+                local players = lobby.players or {}
+                local maxP    = lobby.maxPlayers or 4
+                if #players < maxP then
+                    local rawId = lobby.id or lobbyId
+                    local uuid  = tostring(rawId):gsub("^invasion%-", "")
+                    return uuid
+                end
             end
         end
     end
     return nil
 end
 
+local function startAutoJoinInvasion()
+    if Thread.invasionJoin then
+        pcall(function() task.cancel(Thread.invasionJoin) end)
+        Thread.invasionJoin = nil
+    end
+    Thread.invasionJoin = task.spawn(function()
+        while State.isAutoJoinInvasion and isRunning() do
+            local lobbyId = findOpenInvasionLobbyId()
+            if lobbyId then
+                pcall(function() Remote.LobbiesJoin:InvokeServer(lobbyId) end)
+                task.wait(5)
+            else
+                task.wait(1)
+            end
+        end
+    end)
+end
+
+local function stopAutoJoinInvasion()
+    State.isAutoJoinInvasion = false
+    if Thread.invasionJoin then
+        pcall(function() task.cancel(Thread.invasionJoin) end)
+        Thread.invasionJoin = nil
+    end
+end
+
+-- ============================================================
+--  INVASION HELPERS
+-- ============================================================
+local function isInInvasion()
+    local world = WS:FindFirstChild("World")
+    if not world then return false end
+    local map = world:FindFirstChild("Map")
+    if map then
+        for _, child in ipairs(map:GetChildren()) do
+            if child.Name:lower():find("invasion") then return true end
+        end
+    end
+    for _, g in ipairs(PlayerGui:GetDescendants()) do
+        if (g:IsA("ScreenGui") or g:IsA("Frame")) then
+            local n = g.Name:lower()
+            if n:find("invasion") then return true end
+        end
+    end
+    return false
+end
+
+-- ============================================================
+--  FIX 1: isInvasionVictoryVisible
+--  กรอง WindUI notification ออก ป้องกัน false positive
+-- ============================================================
+local function isInvasionVictoryVisible()
+    for _, rg in ipairs({PlayerGui, Svc.CoreGui}) do
+        for _, g in ipairs(rg:GetDescendants()) do
+            if (g:IsA("TextLabel") or g:IsA("TextButton")) and g.Visible and isGuiActuallyVisible(g) then
+                -- ข้าม WindUI notification ScreenGui
+                local parentGui = g:FindFirstAncestorOfClass("ScreenGui")
+                if parentGui and (parentGui.Name:find("Wind") or parentGui.Name:find("wind")) then
+                    continue
+                end
+                local t = tostring(g.Text or ""):lower()
+                if (t:find("victory") or t:find("invasion complete") or t:find("invasion won"))
+                   and not t:find("restarting") then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function pickBestInvasionCard(available)
+    for _, pri in ipairs(State.invasionCardPriority) do
+        if pri and pri ~= "" then
+            for _, card in ipairs(available) do
+                local bn = card.baseName or card.fullName or ""
+                if bn == pri or bn:sub(1,#pri) == pri or pri:sub(1,#bn) == bn then
+                    return card.fullName
+                end
+            end
+        end
+    end
+    return available[1] and available[1].fullName or nil
+end
+local function doInvasionCardSelection()
+    if State.isInvasionCardSel then return end
+    State.isInvasionCardSel = true
+
+    local function getBaseName(t)
+        return (t:gsub("%s+[IVX]+$",""):match("^%s*(.-)%s*$"))
+    end
+
+    local function getTierLevel(t)
+        if t:match("%s+III$") then return 3
+        elseif t:match("%s+II$") then return 2
+        elseif t:match("%s+I$") then return 1
+        else return 0 end
+    end
+
+    pcall(function()
+        if Remote.InvasionCards then Remote.InvasionCards:FireServer() end
+    end)
+    task.wait(1.5)
+
+    local function scanForCards()
+        local found, seenFull = {}, {}
+        local app = PlayerGui:FindFirstChild("app")
+        if not app then return found end
+        for _, lbl in ipairs(app:GetDescendants()) do
+            if lbl:IsA("TextLabel") and lbl.Visible then
+                local t = (lbl.Text or ""):match("^%s*(.-)%s*$")
+                if t ~= "" and not seenFull[t] then
+                    local base = getBaseName(t)
+                    for _, cn in ipairs(Data.INVASION_CARDS) do
+                        if base == getBaseName(cn) then
+                            seenFull[t] = true
+                            table.insert(found, {
+                                fullName = t,
+                                baseName = getBaseName(cn),
+                                tier     = getTierLevel(t),
+                                obj      = lbl.Parent,
+                            })
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        return found
+    end
+
+    local shown = {}
+    local scanEnd = tick() + 8
+    while tick() < scanEnd do
+        shown = scanForCards()
+        if #shown > 0 then break end
+        pcall(function()
+            if Remote.InvasionCards then Remote.InvasionCards:FireServer() end
+        end)
+        task.wait(0.5)
+    end
+
+    if #shown == 0 then
+        State.isInvasionCardSel = false
+        return
+    end
+
+    local function pickBestWithTier(available)
+        for _, pri in ipairs(State.invasionCardPriority) do
+            if pri and pri ~= "" then
+                local matches = {}
+                for _, card in ipairs(available) do
+                    if card.baseName == pri then
+                        table.insert(matches, card)
+                    end
+                end
+                if #matches > 0 then
+                    table.sort(matches, function(a, b) return a.tier > b.tier end)
+                    return matches[1]
+                end
+            end
+        end
+        table.sort(available, function(a, b) return a.tier > b.tier end)
+        return available[1]
+    end
+
+    local chosen = pickBestWithTier(shown)
+    if chosen and chosen.obj then
+        pcall(function() clickObject(chosen.obj) end)
+        task.wait(0.15)
+        pcall(function() clickObject(chosen.obj) end)
+        WindUI:Notify({
+            Title   = "[Invasion] Card Selected",
+            Content = "Selected: " .. chosen.fullName,
+            Duration = 3,
+        })
+    end
+
+    task.wait(0.5)
+    State.isInvasionCardSel = false
+end
+
+-- ============================================================
+--  FIX 3: farmInvasionEnemies
+--  - กด card ทันทีที่เริ่ม wave
+--  - ลด interval จาก 30s → 5s (timer มีแค่ 43s)
+-- ============================================================
+local function getInvasionMainBaseCFrame()
+    local map = WS:FindFirstChild("World") and WS.World:FindFirstChild("Map")
+    if not map then return nil end
+    for _, child in ipairs(map:GetChildren()) do
+        if child.Name:sub(1, 9) == "invasion-" then
+            local turret = child:FindFirstChild("Barricade", true)
+            if turret then
+                local cf = getInstanceCFrame(turret)
+                if cf then
+                    return cf * CFrame.new(0, 5, 0)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function farmInvasionEnemies(isActiveFunc)
+    local lastATick   = 0
+    local lastCardChk = 0
+    pcall(function()
+        Remote.SetState:FireServer("attack", true)
+        Remote.SetState:FireServer("clicker", true)
+    end)
+
+    if State.isAutoInvasionCard then
+        task.spawn(doInvasionCardSelection)
+        lastCardChk = tick()
+    end
+
+    while isActiveFunc() do
+        if isInvasionVictoryVisible() then break end
+
+        if State.isAutoInvasionCard and tick() - lastCardChk >= 5 then
+            lastCardChk = tick()
+            task.spawn(doInvasionCardSelection)
+        end
+
+        local target = findNearestAnyEnemy()
+        if not target then task.wait(0.2) continue end
+
+        local char  = player.Character
+        local hrp   = char and char:FindFirstChild("HumanoidRootPart")
+        local units = getMyUnits()
+        local tPos  = getEnemyCFrame(target)
+
+        if tPos and hrp then
+            if (hrp.Position - tPos.Position).Magnitude > 3000 then
+                task.wait(0.2) continue
+            end
+
+            -- ยืนบน Main Base Turret แทน
+            local baseCF = getInvasionMainBaseCFrame()
+            if baseCF then
+                hrp.CFrame = baseCF
+            else
+                hrp.CFrame = tPos * CFrame.new(0, 5, 0)
+            end
+            hrp.AssemblyLinearVelocity  = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+
+            if tick() - lastATick >= 0.15 then
+                lastATick = tick()
+                teleportUnitsTo(tPos)
+                pcall(function() Remote.SendUnit:FireServer(target.Name, units) end)
+            end
+        end
+        task.wait(0.08)
+    end
+
+    pcall(function()
+        Remote.SetState:FireServer("attack", false)
+        Remote.SetState:FireServer("clicker", false)
+    end)
+end
+
+local function runOneInvasionRound(isActiveFunc)
+    WindUI:Notify({
+        Title   = "[Invasion] Dark Matter Invasion",
+        Content = "Loading team & creating room...",
+        Duration = 4,
+    })
+    loadTeam(State.invasionTeamSlot) task.wait(1)
+    loadTeam(State.invasionTeamSlot) task.wait(2)
+
+    local ok = pcall(function()
+        if Remote.InvasionCreate then
+            Remote.InvasionCreate:InvokeServer(Data.INVASION_NAME, {friendsOnly = false})
+        end
+    end)
+    if not ok then
+        pcall(function()
+            if Remote.InvasionCreate then
+                Remote.InvasionCreate:FireServer(Data.INVASION_NAME, {friendsOnly = false})
+            end
+        end)
+    end
+    task.wait(2)
+    pcall(function() Remote.LobbiesStart:FireServer() end)
+    task.wait(3)
+
+    local waited = 0
+    while not isInInvasion() and waited < 20 and isActiveFunc() do
+        task.wait(1) waited += 1
+    end
+
+    if not isInInvasion() then
+        WindUI:Notify({Title="[Invasion] Failed to enter", Content="Retrying next round...", Duration=4})
+        return
+    end
+
+    WindUI:Notify({Title="[Invasion] Farming!", Content="Auto attacking enemies...", Duration=3})
+
+    local roundStart = tick()
+    farmInvasionEnemies(function()
+        return isActiveFunc()
+            and tick()-roundStart < 30*60
+            and not isInvasionVictoryVisible()
+    end)
+
+    if isInvasionVictoryVisible() then
+        WindUI:Notify({Title="[Invasion] Victory!", Content="Round complete! Restarting...", Duration=4})
+        task.wait(5)
+    else
+        WindUI:Notify({Title="[Invasion] Round ended", Content="Leaving...", Duration=3})
+  end
+    task.wait(3)
+end
+
+local function startInvasionLoop()
+    if Thread.invasion then
+        pcall(function() task.cancel(Thread.invasion) end)
+        Thread.invasion = nil
+    end
+    Thread.invasion = task.spawn(function()
+        local round = 0
+        while State.isAutoInvasion and isRunning() do
+            round += 1
+            WindUI:Notify({
+                Title   = string.format("[Invasion] Round #%d", round),
+                Content = "Dark Matter Invasion",
+                Duration = 3,
+            })
+            runOneInvasionRound(function()
+                return State.isAutoInvasion and isRunning()
+            end)
+            if State.isAutoInvasion and isRunning() then task.wait(5) end
+        end
+        WindUI:Notify({Title="[Invasion] Stopped", Content="Auto Invasion disabled.", Duration=3})
+    end)
+end
+
+local function stopInvasionLoop()
+    State.isAutoInvasion = false
+    if Thread.invasion then
+        pcall(function() task.cancel(Thread.invasion) end)
+        Thread.invasion = nil
+    end
+    pcall(function()
+        Remote.SetState:FireServer("attack",false)
+        Remote.SetState:FireServer("clicker",false)
+    end)
+end
+
+-- ============================================================
+--  ESCORT THREAD HELPERS
+-- ============================================================
 local function startAutoJoinEscort()
     if Thread.escortJoin then
         pcall(function() task.cancel(Thread.escortJoin) end)
@@ -1459,13 +1949,9 @@ local function startAutoJoinEscort()
         while State.isAutoJoinEscort do
             local lobbyId = findOpenEscortLobbyId()
             if lobbyId then
-                local ok = pcall(function()
-                    Remote.LobbiesJoin:InvokeServer(lobbyId)
-                end)
-                if not ok then
-                    pcall(function() Remote.LobbiesJoin:FireServer(lobbyId) end)
-                end
-                task.wait(5)  
+                local ok = pcall(function() Remote.LobbiesJoin:InvokeServer(lobbyId) end)
+                if not ok then pcall(function() Remote.LobbiesJoin:FireServer(lobbyId) end) end
+                task.wait(5)
             else
                 task.wait(1)
             end
@@ -1543,7 +2029,7 @@ local function startAutoEscortStart()
     Thread.escortStart = task.spawn(function()
         while State.isAutoEscortStart do
             pcall(function() Remote.LobbiesStart:FireServer() end)
-            task.wait(CONST.ESCORT_LOOP_INTERVAL)
+            task.wait(20)
         end
     end)
 end
@@ -1554,7 +2040,7 @@ local function startAutoEscortReplay()
         while State.isAutoEscortReplay do
             local tierStr = getTierString(State.selectedReplayTier)
             pcall(function() Remote.EscortReplay:InvokeServer(tierStr) end)
-            task.wait(CONST.ESCORT_LOOP_INTERVAL)
+            task.wait(20)
         end
     end)
 end
@@ -1786,7 +2272,7 @@ local function runOneGauntletRound()
 end
 
 -- ============================================================
---  INFILTRATION VICTORY CHECK
+--  INFILTRATION HELPERS
 -- ============================================================
 local function isInfiltVictoryVisible()
     for _, rg in ipairs({PlayerGui, Svc.CoreGui}) do
@@ -1801,9 +2287,6 @@ local function isInfiltVictoryVisible()
     return false
 end
 
--- ============================================================
---  INFILTRATION RUNNER
--- ============================================================
 local function runOneInfiltrationRound(name, path, isActiveFunc)
     WindUI:Notify({
         Title    = string.format("[Infiltration] %s — Path %s", name, path),
@@ -1874,8 +2357,8 @@ local function runOneInfiltrationRound(name, path, isActiveFunc)
 
             local h = target:FindFirstChildOfClass("Humanoid")
             if target:GetAttribute("dead") == true or (h and h.Health <= 0) then
-                local next = findNearestEnemyInRange(RANGE)
-                if next then target = next else break end
+                local nxt = findNearestEnemyInRange(RANGE)
+                if nxt then target = nxt else break end
             end
 
             local char  = player.Character
@@ -1954,7 +2437,7 @@ end
 -- ============================================================
 task.spawn(function()
     task.wait(5)
-    while true do
+    while isRunning() do
         if not State.isGauntletFarm then task.wait(2) continue end
         local now       = os.time()
         local secInHour = now % 3600
@@ -2006,17 +2489,18 @@ updateRaidStatus = function()
             local now   = tick()
             local cdEnd = Data.RaidCooldowns[raidName]
             local cfg   = Data.RaidConfig[raidName] or {}
+            local portalTag = Data.RaidNoPortal[raidName] and " [NP]" or ""
             local hint  = (cfg.light and #cfg.light > 0) and (" [L→"..(cfg.tank and "T→" or "").."B]") or ""
             local line
             if cdEnd and now < cdEnd then
                 local rem = math.ceil(cdEnd-now)
-                line = string.format("[CD] %s%s — %02d:%02d", raidName, hint, math.floor(rem/60), rem%60)
+                line = string.format("[CD] %s%s%s — %02d:%02d", raidName, portalTag, hint, math.floor(rem/60), rem%60)
             elseif State.pauseForGauntlet then
-                line = string.format("[PAUSED] %s%s", raidName, hint)
+                line = string.format("[PAUSED] %s%s%s", raidName, portalTag, hint)
             elseif not State.isAutoRaidEnabled then
-                line = string.format("[OFF] %s%s", raidName, hint)
+                line = string.format("[OFF] %s%s%s", raidName, portalTag, hint)
             else
-                line = string.format("[QUEUED] %s%s", raidName, hint)
+                line = string.format("[QUEUED] %s%s%s", raidName, portalTag, hint)
             end
             table.insert(lines, line)
         end
@@ -2031,7 +2515,7 @@ updateRaidStatus = function()
 end
 
 task.spawn(function()
-    while true do task.wait(5) pcall(updateRaidStatus) end
+    while isRunning() do task.wait(5) pcall(updateRaidStatus) end
 end)
 
 -- ============================================================
@@ -2096,8 +2580,9 @@ local Window = WindUI:CreateWindow({
     HideSearchBar               = true,
     ScrollBarEnabled            = false,
 })
+getgenv().GhostHubAW3_Window = Window
 Window:Tag({Title="Beta",    Icon="badge-alert", Color=Color3.fromHex("#0011ff"), Radius=6})
-Window:Tag({Title="v.0.2.3", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
+Window:Tag({Title="v.0.3.1", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftControl)
 
 -- ============================================================
@@ -2106,6 +2591,7 @@ Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftContro
 local Tab = {
     Farm     = Window:Tab({Title="Farming",      Icon="crosshair"}),
     Event    = Window:Tab({Title="Event",         Icon="citrus"}),
+    Invasion = Window:Tab({Title="Invasion",      Icon="zap-off"}),
     Raid     = Window:Tab({Title="Raid",          Icon="shield-alert"}),
     Gauntlet = Window:Tab({Title="Gauntlet",      Icon="zap"}),
     Infilt   = Window:Tab({Title="Infiltration",  Icon="shield"}),
@@ -2274,8 +2760,7 @@ Tab.Event:Toggle({
         State.isFollowingCart  = v
         Options.AutoFollowCart = v
         SaveConfig()
-        if v then
-            startFollowCart()
+        if v then startFollowCart()
         else
             State.isFollowingCart = false
             if Thread.cartFollow then
@@ -2335,8 +2820,7 @@ Tab.Event:Button({
         end)
         WindUI:Notify({
             Title   = ok and "[Escort] Created!" or "[Escort] Failed",
-            Content = ok and string.format("Map: %s | Tier: %s", State.selectedEscortMap, tierStr)
-                         or "Failed — try again.",
+            Content = ok and string.format("Map: %s | Tier: %s", State.selectedEscortMap, tierStr) or "Failed — try again.",
             Duration = 3,
         })
     end
@@ -2351,13 +2835,10 @@ Tab.Event:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoEscortStart or false,
     Callback = function(v)
-        State.isAutoEscortStart = v
-        Options.AutoEscortStart = v
-        SaveConfig()
+        State.isAutoEscortStart = v Options.AutoEscortStart = v SaveConfig()
         if v then startAutoEscortStart()
         elseif Thread.escortStart then
-            pcall(function() task.cancel(Thread.escortStart) end)
-            Thread.escortStart = nil
+            pcall(function() task.cancel(Thread.escortStart) end) Thread.escortStart = nil
         end
     end
 })
@@ -2368,13 +2849,10 @@ Tab.Event:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoEscortReplay or false,
     Callback = function(v)
-        State.isAutoEscortReplay = v
-        Options.AutoEscortReplay = v
-        SaveConfig()
+        State.isAutoEscortReplay = v Options.AutoEscortReplay = v SaveConfig()
         if v then startAutoEscortReplay()
         elseif Thread.escortReplay then
-            pcall(function() task.cancel(Thread.escortReplay) end)
-            Thread.escortReplay = nil
+            pcall(function() task.cancel(Thread.escortReplay) end) Thread.escortReplay = nil
         end
     end
 })
@@ -2385,33 +2863,173 @@ Tab.Event:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoEscortAccept or false,
     Callback = function(v)
-        State.isAutoEscortAccept = v
-        Options.AutoEscortAccept = v
-        SaveConfig()
+        State.isAutoEscortAccept = v Options.AutoEscortAccept = v SaveConfig()
         if v then startAutoEscortAccept()
         elseif Thread.escortAccept then
-            pcall(function() task.cancel(Thread.escortAccept) end)
-            Thread.escortAccept = nil
+            pcall(function() task.cancel(Thread.escortAccept) end) Thread.escortAccept = nil
         end
     end
 })
 
--- ============================================================
---  AUTO JOIN ESCORT TOGGLE
--- ============================================================
 Tab.Event:Toggle({
     Title    = "Auto Join Other Escort",
     Icon     = "user-plus",
     Type     = "Checkbox",
     Value    = Options.AutoJoinEscort or false,
     Callback = function(v)
-        State.isAutoJoinEscort = v
-        Options.AutoJoinEscort = v
+        State.isAutoJoinEscort = v Options.AutoJoinEscort = v SaveConfig()
+        if v then startAutoJoinEscort() else stopAutoJoinEscort() end
+    end
+})
+
+-- ============================================================
+--  INVASION TAB
+-- ============================================================
+Tab.Invasion:Section({Title="Dark Matter Invasion"})
+
+Tab.Invasion:Section({Title="Card Priority"})
+
+for i = 1, 5 do
+    local idx = i
+    Tab.Invasion:Dropdown({
+        Title    = "Card Priority "..i,
+        Icon     = "star",
+        Values   = Data.INVASION_CARDS,
+        Value    = State.invasionCardPriority[i] or "",
+        Multi    = false,
+        Callback = function(v)
+            State.invasionCardPriority[idx]   = (v and v~="") and v or nil
+            Options.InvasionCardPriority[idx] = State.invasionCardPriority[idx]
+            SaveConfig()
+        end
+    })
+end
+
+Tab.Invasion:Divider()
+Tab.Invasion:Section({Title="Team & Controls"})
+
+Tab.Invasion:Dropdown({
+    Title    = "Team Slot",
+    Icon     = "users",
+    Desc     = "Load this team when entering Invasion",
+    Values   = CONST.TEAM_SLOTS,
+    Value    = State.invasionTeamSlot,
+    Multi    = false,
+    Callback = function(v)
+        if v and v ~= "" then
+            State.invasionTeamSlot   = v
+            Options.InvasionTeamSlot = v
+            SaveConfig()
+        end
+    end
+})
+
+Tab.Invasion:Button({
+    Title    = "Create Invasion Room",
+    Icon     = "plus-circle",
+    Desc     = "Manually create Dark Matter Invasion",
+    Callback = function()
+        loadTeam(State.invasionTeamSlot) task.wait(1)
+        local ok = pcall(function()
+            if Remote.InvasionCreate then
+                Remote.InvasionCreate:InvokeServer(Data.INVASION_NAME, {friendsOnly=false})
+            end
+        end)
+        if not ok then
+            pcall(function()
+                if Remote.InvasionCreate then
+                    Remote.InvasionCreate:FireServer(Data.INVASION_NAME, {friendsOnly=false})
+                end
+            end)
+        end
+        WindUI:Notify({Title="[Invasion] Room Created", Content=Data.INVASION_NAME, Duration=3})
+    end
+})
+
+Tab.Invasion:Button({
+    Title    = "Start Room",
+    Icon     = "play",
+    Callback = function()
+        pcall(function() Remote.LobbiesStart:FireServer() end)
+        WindUI:Notify({Title="[Invasion] Started", Content="Room started!", Duration=3})
+    end
+})
+
+Tab.Invasion:Button({
+    Title    = "Leave Invasion",
+    Icon     = "log-out",
+    Callback = function()
+        pcall(function()
+            if Remote.InvasionLeave then Remote.InvasionLeave:FireServer() end
+        end)
+        WindUI:Notify({Title="[Invasion] Left", Content="Left room.", Duration=3})
+    end
+})
+
+Tab.Invasion:Divider()
+Tab.Invasion:Section({Title="Auto Invasion"})
+
+Tab.Invasion:Toggle({
+    Title    = "Auto Select Card",
+    Icon     = "layers",
+    Desc     = "Auto vote card based on priority list above",
+    Type     = "Checkbox",
+    Value    = Options.AutoInvasionCard or false,
+    Callback = function(v)
+        State.isAutoInvasionCard = v
+        Options.AutoInvasionCard = v
+        SaveConfig()
+    end
+})
+
+Tab.Invasion:Toggle({
+    Title    = "Auto Join Other Invasion",
+    Icon     = "user-plus",
+    Desc     = "Auto join open Invasion lobbies",
+    Type     = "Checkbox",
+    Value    = Options.AutoJoinInvasion or false,
+    Callback = function(v)
+        State.isAutoJoinInvasion = v
+        Options.AutoJoinInvasion = v
+        SaveConfig()
+        if v then startAutoJoinInvasion() else stopAutoJoinInvasion() end
+    end
+})
+Tab.Invasion:Toggle({
+    Title    = "Auto Replay Invasion",
+    Icon     = "repeat",
+    Desc     = "Auto replay invasion every 20s",
+    Type     = "Checkbox",
+    Value    = Options.AutoInvasionReplay or false,
+    Callback = function(v)
+        State.isAutoInvasionReplay = v
+        Options.AutoInvasionReplay = v
         SaveConfig()
         if v then
-            startAutoJoinEscort()
+            startAutoInvasionReplay()
+            WindUI:Notify({Title="[Invasion] Auto Replay ON", Content="Replaying every 20s", Duration=3})
         else
-            stopAutoJoinEscort()
+            stopAutoInvasionReplay()
+            WindUI:Notify({Title="[Invasion] Auto Replay OFF", Content="Stopped.", Duration=3})
+        end
+    end
+})
+Tab.Invasion:Toggle({
+    Title    = "Auto Invasion",
+    Icon     = "zap-off",
+    Desc     = "Auto create → start → farm → repeat",
+    Type     = "Checkbox",
+    Value    = Options.AutoInvasion or false,
+    Callback = function(v)
+        Options.AutoInvasion = v
+        SaveConfig()
+        if v then
+            State.isAutoInvasion = true
+            startInvasionLoop()
+            WindUI:Notify({Title="[Invasion] Auto ON", Content="Dark Matter Invasion auto started!", Duration=4})
+        else
+            stopInvasionLoop()
+            WindUI:Notify({Title="[Invasion] Auto OFF", Content="Stopped.", Duration=3})
         end
     end
 })
@@ -2496,6 +3114,7 @@ Tab.Raid:Button({
         for _, rn in ipairs(active) do
             local cfg  = Data.RaidConfig[rn] or {}
             local info = rn.."\n"
+            if Data.RaidNoPortal[rn] then info = info.."  [No Portal — Direct Join]\n" end
             info = info.."  Light: "..(cfg.light and #cfg.light>0 and table.concat(cfg.light,", ") or "(none)").."\n"
             if cfg.tank then info = info.."  Tank: "..cfg.tank.."\n" end
             info = info.."  Boss: "..(cfg.boss or "auto-detect")
@@ -2565,9 +3184,7 @@ Tab.Gauntlet:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoLeaveGauntlet or false,
     Callback = function(v)
-        State.isGauntletAutoLeave = v
-        Options.AutoLeaveGauntlet = v
-        SaveConfig()
+        State.isGauntletAutoLeave = v Options.AutoLeaveGauntlet = v SaveConfig()
     end
 })
 
@@ -2580,9 +3197,7 @@ Tab.Gauntlet:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoSelectCard or false,
     Callback = function(v)
-        State.isGauntletAutoCard = v
-        Options.AutoSelectCard   = v
-        SaveConfig()
+        State.isGauntletAutoCard = v Options.AutoSelectCard = v SaveConfig()
     end
 })
 
@@ -2593,9 +3208,7 @@ Tab.Gauntlet:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoGauntlet or false,
     Callback = function(v)
-        State.isGauntletFarm = v
-        Options.AutoGauntlet = v
-        SaveConfig()
+        State.isGauntletFarm = v Options.AutoGauntlet = v SaveConfig()
         if v then
             WindUI:Notify({Title="Gauntlet Scheduler ON", Content="Enters at xx:00 every hour.", Duration=5})
         else
@@ -2625,11 +3238,7 @@ Tab.Infilt:Dropdown({
     Value    = State.selectedInfiltName,
     Multi    = false,
     Callback = function(v)
-        if v and v ~= "" then
-            State.selectedInfiltName = v
-            Options.InfiltName       = v
-            SaveConfig()
-        end
+        if v and v ~= "" then State.selectedInfiltName = v Options.InfiltName = v SaveConfig() end
     end
 })
 
@@ -2641,11 +3250,7 @@ Tab.Infilt:Dropdown({
     Value    = State.selectedInfiltPath,
     Multi    = false,
     Callback = function(v)
-        if v and v ~= "" then
-            State.selectedInfiltPath = v
-            Options.InfiltPath       = v
-            SaveConfig()
-        end
+        if v and v ~= "" then State.selectedInfiltPath = v Options.InfiltPath = v SaveConfig() end
     end
 })
 
@@ -2657,38 +3262,7 @@ Tab.Infilt:Dropdown({
     Value    = State.infiltTeamSlot,
     Multi    = false,
     Callback = function(v)
-        if v and v ~= "" then
-            State.infiltTeamSlot   = v
-            Options.InfiltTeamSlot = v
-            SaveConfig()
-        end
-    end
-})
-
-Tab.Infilt:Divider()
-Tab.Infilt:Section({Title="Path Info"})
-
-Tab.Infilt:Button({
-    Title    = "Show Path Details",
-    Icon     = "info",
-    Callback = function()
-        local d = Data.InfiltrationContent[State.selectedInfiltName]
-        if not d or not d.paths then
-            WindUI:Notify({Title="Path Info", Content="No data: "..State.selectedInfiltName, Duration=3}) return
-        end
-        for _, pk in ipairs(CONST.INFILT_PATHS) do
-            local p = d.paths[pk]
-            if p then
-                WindUI:Notify({
-                    Title   = string.format("Path %s — %s", pk, State.selectedInfiltName),
-                    Content = string.format("Key: %s x%d\nKill Drop: x%.1f | Complete: x%.1f",
-                        p.keyId or "?", p.keyAmount or 0,
-                        p.killDropMultiplier or 1, p.completionDropMultiplier or 1),
-                    Duration = 6,
-                })
-                task.wait(0.5)
-            end
-        end
+        if v and v ~= "" then State.infiltTeamSlot = v Options.InfiltTeamSlot = v SaveConfig() end
     end
 })
 
@@ -2745,8 +3319,7 @@ Tab.Infilt:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoInfiltration or false,
     Callback = function(v)
-        Options.AutoInfiltration = v
-        SaveConfig()
+        Options.AutoInfiltration = v SaveConfig()
         if v then
             State.isAutoInfiltration = true
             startInfiltrationLoop()
@@ -2775,9 +3348,7 @@ local EggDropdown = Tab.Summon:Dropdown({
     Multi    = false,
     Callback = function(v)
         if v and v ~= "" and v ~= "(No eggs found)" then
-            State.selectedEggName   = v
-            Options.SelectedEggName = v
-            SaveConfig()
+            State.selectedEggName = v Options.SelectedEggName = v SaveConfig()
         end
     end
 })
@@ -2820,9 +3391,7 @@ Tab.Summon:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoEgg or false,
     Callback = function(v)
-        State.isAutoEgg = v
-        Options.AutoEgg = v
-        SaveConfig()
+        State.isAutoEgg = v Options.AutoEgg = v SaveConfig()
         if State.isAutoEgg then
             task.spawn(function()
                 local eggCF = getEggCFrame(State.selectedEggName)
@@ -2908,8 +3477,7 @@ Tab.Units:Toggle({
     Type     = "Checkbox",
     Value    = Options.SendAllUnits or false,
     Callback = function(v)
-        Options.SendAllUnits = v
-        SaveConfig()
+        Options.SendAllUnits = v SaveConfig()
         pcall(function() Remote.SettingsSet:FireServer("send_all",v) end)
     end
 })
@@ -2920,8 +3488,7 @@ Tab.Units:Toggle({
     Type     = "Checkbox",
     Value    = Options.NoRetreat or false,
     Callback = function(v)
-        Options.NoRetreat = v
-        SaveConfig()
+        Options.NoRetreat = v SaveConfig()
         pcall(function() Remote.SettingsSet:FireServer("no_retreat",v) end)
     end
 })
@@ -2932,9 +3499,7 @@ Tab.Units:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoEquip or false,
     Callback = function(v)
-        State.isAutoEquip = v
-        Options.AutoEquip = v
-        SaveConfig()
+        State.isAutoEquip = v Options.AutoEquip = v SaveConfig()
         if v then
             task.spawn(function()
                 while State.isAutoEquip do
@@ -2961,11 +3526,7 @@ Tab.Units:Dropdown({
     Value    = State.gauntletTeamSlot,
     Multi    = false,
     Callback = function(v)
-        if v and v ~= "" then
-            State.gauntletTeamSlot   = v
-            Options.GauntletTeamSlot = v
-            SaveConfig()
-        end
+        if v and v ~= "" then State.gauntletTeamSlot = v Options.GauntletTeamSlot = v SaveConfig() end
     end
 })
 
@@ -2988,11 +3549,7 @@ Tab.Units:Dropdown({
     Value    = State.raidTeamSlot,
     Multi    = false,
     Callback = function(v)
-        if v and v ~= "" then
-            State.raidTeamSlot   = v
-            Options.RaidTeamSlot = v
-            SaveConfig()
-        end
+        if v and v ~= "" then State.raidTeamSlot = v Options.RaidTeamSlot = v SaveConfig() end
     end
 })
 
@@ -3042,9 +3599,7 @@ local QuestDropdown = Tab.Quest:Dropdown({
     Multi    = false,
     Callback = function(v)
         if v and v ~= "" and v ~= "(No quests found)" then
-            State.selectedQuestId   = v
-            Options.SelectedQuestId = v
-            SaveConfig()
+            State.selectedQuestId = v Options.SelectedQuestId = v SaveConfig()
         end
     end
 })
@@ -3073,9 +3628,7 @@ Tab.Quest:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoQuest or false,
     Callback = function(v)
-        State.isAutoQuest = v
-        Options.AutoQuest = v
-        SaveConfig()
+        State.isAutoQuest = v Options.AutoQuest = v SaveConfig()
         if v then
             task.spawn(function()
                 while State.isAutoQuest do
@@ -3325,8 +3878,7 @@ Tab.Settings:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoRejoin or false,
     Callback = function(v)
-        Options.AutoRejoin = v
-        SaveConfig()
+        Options.AutoRejoin = v SaveConfig()
         if v then
             task.spawn(function()
                 local overlay = Svc.CoreGui:WaitForChild("RobloxPromptGui"):WaitForChild("promptOverlay")
@@ -3347,7 +3899,7 @@ Tab.Settings:Toggle({
 --  ANTI AFK LOOP
 -- ============================================================
 task.spawn(function()
-    while true do
+    while isRunning() do
         task.wait(120)
         if Options.AntiAFK then
             pcall(function()
