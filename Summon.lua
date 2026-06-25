@@ -107,7 +107,8 @@ local Options = {
     AutoInvasionCard     = false,
     InvasionCardPriority = {},
     InvasionTeamSlot     = "1",
-    AutoInvasionReplay = false,
+    AutoInvasionReplay   = false,
+    AutoStandBarricade   = false,
 }
 
 local function SaveConfig()
@@ -219,13 +220,14 @@ local State = {
     raidTeamSlot        = Options.RaidTeamSlot     or "1",
     infiltTeamSlot      = Options.InfiltTeamSlot   or "1",
     -- Invasion
-    isAutoInvasion      = Options.AutoInvasion      or false,
-    isAutoJoinInvasion  = Options.AutoJoinInvasion  or false,
-    isAutoInvasionCard  = Options.AutoInvasionCard  or false,
-    invasionCardPriority= Options.InvasionCardPriority or {},
-    invasionTeamSlot    = Options.InvasionTeamSlot  or "1",
-    isInvasionCardSel   = false,
-    AutoInvasionReplay = false,
+    isAutoInvasion       = Options.AutoInvasion      or false,
+    isAutoJoinInvasion   = Options.AutoJoinInvasion  or false,
+    isAutoInvasionCard   = Options.AutoInvasionCard  or false,
+    invasionCardPriority = Options.InvasionCardPriority or {},
+    invasionTeamSlot     = Options.InvasionTeamSlot  or "1",
+    isInvasionCardSel    = false,
+    isAutoInvasionReplay = Options.AutoInvasionReplay or false,
+    isStandingBarricade   = Options.AutoStandBarricade or false,
 }
 
 -- ============================================================
@@ -242,6 +244,7 @@ local Thread = {
     invasion      = nil,
     invasionJoin  = nil,
     invasionReplay = nil,
+    standBarricade = nil,
 }
 
 -- ============================================================
@@ -1636,7 +1639,7 @@ local function isInInvasion()
 end
 
 -- ============================================================
---  FIX 1: isInvasionVictoryVisible
+--  isInvasionVictoryVisible
 --  กรอง WindUI notification ออก ป้องกัน false positive
 -- ============================================================
 local function isInvasionVictoryVisible()
@@ -1769,9 +1772,7 @@ local function doInvasionCardSelection()
 end
 
 -- ============================================================
---  FIX 3: farmInvasionEnemies
---  - กด card ทันทีที่เริ่ม wave
---  - ลด interval จาก 30s → 5s (timer มีแค่ 43s)
+--  getInvasionMainBaseCFrame
 -- ============================================================
 local function getInvasionMainBaseCFrame()
     local map = WS:FindFirstChild("World") and WS.World:FindFirstChild("Map")
@@ -1782,7 +1783,7 @@ local function getInvasionMainBaseCFrame()
             if turret then
                 local cf = getInstanceCFrame(turret)
                 if cf then
-                    return cf * CFrame.new(0, 5, 0)
+                    return cf * CFrame.new(0, 0, 0)
                 end
             end
         end
@@ -1790,6 +1791,57 @@ local function getInvasionMainBaseCFrame()
     return nil
 end
 
+-- ============================================================
+--  AUTO STAND AT BARRICADE
+--  ล็อกตำแหน่งผู้เล่นไว้ที่ Barricade ตลอด ไม่สนใจตำแหน่งมอน
+-- ============================================================
+local function startStandAtBarricade()
+    if Thread.standBarricade then
+        pcall(function() task.cancel(Thread.standBarricade) end)
+        Thread.standBarricade = nil
+    end
+    Thread.standBarricade = task.spawn(function()
+        local notified = false
+        while State.isStandingBarricade do
+            local baseCF = getInvasionMainBaseCFrame()
+            if baseCF then
+                local char = player.Character
+                local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    hrp.CFrame = baseCF
+                    hrp.AssemblyLinearVelocity  = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end
+                if not notified then
+                    notified = true
+                    WindUI:Notify({
+                        Title    = "[Invasion] Standing at Barricade",
+                        Content  = "ยืนตำแหน่ง Barricade แล้ว",
+                        Duration = 3,
+                    })
+                end
+            else
+                notified = false
+            end
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function stopStandAtBarricade()
+    State.isStandingBarricade = false
+    if Thread.standBarricade then
+        pcall(function() task.cancel(Thread.standBarricade) end)
+        Thread.standBarricade = nil
+    end
+end
+
+-- ============================================================
+--  farmInvasionEnemies
+--  - กด card ทันทีที่เริ่ม wave
+--  - ถ้าเปิด "Auto Stand at Barricade" จะไม่ขยับตำแหน่งผู้เล่นเอง (ปล่อยให้ thread แยกดูแล)
+--  - ถ้าไม่ได้เปิด จะวาปไปยังมอนแต่ละตัวตามเดิม
+-- ============================================================
 local function farmInvasionEnemies(isActiveFunc)
     local lastATick   = 0
     local lastCardChk = 0
@@ -1812,35 +1864,61 @@ local function farmInvasionEnemies(isActiveFunc)
         end
 
         local target = findNearestAnyEnemy()
-        if not target then task.wait(0.2) continue end
+        local char   = player.Character
+        local hrp    = char and char:FindFirstChild("HumanoidRootPart")
 
-        local char  = player.Character
-        local hrp   = char and char:FindFirstChild("HumanoidRootPart")
-        local units = getMyUnits()
-        local tPos  = getEnemyCFrame(target)
-
-        if tPos and hrp then
-            if (hrp.Position - tPos.Position).Magnitude > 3000 then
-                task.wait(0.2) continue
+        if State.isStandingBarricade then
+            -- โหมด Barricade: ยืนที่ barricade อย่างเดียว แค่ส่งทหารไปตีมอน
+            if hrp then
+                local baseCF = getInvasionMainBaseCFrame()
+                if baseCF then
+                    hrp.CFrame = baseCF
+                    hrp.AssemblyLinearVelocity  = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            if target then
+                local tPos = getEnemyCFrame(target)
+                if tPos and tick() - lastATick >= 0.15 then
+                    lastATick = tick()
+                    local units = getMyUnits()
+                    teleportUnitsTo(tPos)
+                    pcall(function() Remote.SendUnit:FireServer(target.Name, units) end)
+                end
+            end
+        else
+            -- โหมดปกติ: วาปไปหามอน ถ้าไม่มีมอนวาปไป barricade
+            if not target then
+                if hrp then
+                    local baseCF = getInvasionMainBaseCFrame()
+                    if baseCF then
+                        hrp.CFrame = baseCF
+                        hrp.AssemblyLinearVelocity  = Vector3.zero
+                        hrp.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end
+                task.wait(0.2)
+                continue
             end
 
-            -- ยืนบน Main Base Turret แทน
-            local baseCF = getInvasionMainBaseCFrame()
-            if baseCF then
-                hrp.CFrame = baseCF
-            else
+            local tPos = getEnemyCFrame(target)
+            if tPos and hrp then
+                if (hrp.Position - tPos.Position).Magnitude > 3000 then
+                    task.wait(0.2) continue
+                end
                 hrp.CFrame = tPos * CFrame.new(0, 5, 0)
-            end
-            hrp.AssemblyLinearVelocity  = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-
-            if tick() - lastATick >= 0.15 then
-                lastATick = tick()
-                teleportUnitsTo(tPos)
-                pcall(function() Remote.SendUnit:FireServer(target.Name, units) end)
+                hrp.AssemblyLinearVelocity  = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+                if tick() - lastATick >= 0.15 then
+                    lastATick = tick()
+                    local units = getMyUnits()
+                    teleportUnitsTo(tPos)
+                    pcall(function() Remote.SendUnit:FireServer(target.Name, units) end)
+                end
             end
         end
-        task.wait(0.08)
+
+        task.wait(0.1)
     end
 
     pcall(function()
@@ -1852,39 +1930,20 @@ end
 local function runOneInvasionRound(isActiveFunc)
     WindUI:Notify({
         Title   = "[Invasion] Dark Matter Invasion",
-        Content = "Loading team & creating room...",
-        Duration = 4,
+        Content = "Farming enemies...",
+        Duration = 3,
     })
-    loadTeam(State.invasionTeamSlot) task.wait(1)
-    loadTeam(State.invasionTeamSlot) task.wait(2)
-
-    local ok = pcall(function()
-        if Remote.InvasionCreate then
-            Remote.InvasionCreate:InvokeServer(Data.INVASION_NAME, {friendsOnly = false})
-        end
-    end)
-    if not ok then
-        pcall(function()
-            if Remote.InvasionCreate then
-                Remote.InvasionCreate:FireServer(Data.INVASION_NAME, {friendsOnly = false})
-            end
-        end)
-    end
-    task.wait(2)
-    pcall(function() Remote.LobbiesStart:FireServer() end)
-    task.wait(3)
 
     local waited = 0
-    while not isInInvasion() and waited < 20 and isActiveFunc() do
+    while not isInInvasion() and waited < 30 and isActiveFunc() do
         task.wait(1) waited += 1
     end
 
     if not isInInvasion() then
-        WindUI:Notify({Title="[Invasion] Failed to enter", Content="Retrying next round...", Duration=4})
+        task.wait(5)
         return
     end
 
-    WindUI:Notify({Title="[Invasion] Farming!", Content="Auto attacking enemies...", Duration=3})
 
     local roundStart = tick()
     farmInvasionEnemies(function()
@@ -1894,11 +1953,9 @@ local function runOneInvasionRound(isActiveFunc)
     end)
 
     if isInvasionVictoryVisible() then
-        WindUI:Notify({Title="[Invasion] Victory!", Content="Round complete! Restarting...", Duration=4})
         task.wait(5)
     else
-        WindUI:Notify({Title="[Invasion] Round ended", Content="Leaving...", Duration=3})
-  end
+    end
     task.wait(3)
 end
 
@@ -1908,14 +1965,7 @@ local function startInvasionLoop()
         Thread.invasion = nil
     end
     Thread.invasion = task.spawn(function()
-        local round = 0
         while State.isAutoInvasion and isRunning() do
-            round += 1
-            WindUI:Notify({
-                Title   = string.format("[Invasion] Round #%d", round),
-                Content = "Dark Matter Invasion",
-                Duration = 3,
-            })
             runOneInvasionRound(function()
                 return State.isAutoInvasion and isRunning()
             end)
@@ -2582,7 +2632,7 @@ local Window = WindUI:CreateWindow({
 })
 getgenv().GhostHubAW3_Window = Window
 Window:Tag({Title="Beta",    Icon="badge-alert", Color=Color3.fromHex("#0011ff"), Radius=6})
-Window:Tag({Title="v.0.3.1", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
+Window:Tag({Title="v.0.3.2", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftControl)
 
 -- ============================================================
@@ -2995,6 +3045,7 @@ Tab.Invasion:Toggle({
         if v then startAutoJoinInvasion() else stopAutoJoinInvasion() end
     end
 })
+
 Tab.Invasion:Toggle({
     Title    = "Auto Replay Invasion",
     Icon     = "repeat",
@@ -3014,10 +3065,29 @@ Tab.Invasion:Toggle({
         end
     end
 })
+
+Tab.Invasion:Toggle({
+    Title    = "Auto Stand at Barricade",
+    Icon     = "map-pin",
+    Desc     = "",
+    Type     = "Checkbox",
+    Value    = Options.AutoStandBarricade or false,
+    Callback = function(v)
+        State.isStandingBarricade = v
+        Options.AutoStandBarricade = v
+        SaveConfig()
+        if v then
+            startStandAtBarricade()
+        else
+            stopStandAtBarricade()
+        end
+    end
+})
+
 Tab.Invasion:Toggle({
     Title    = "Auto Invasion",
     Icon     = "zap-off",
-    Desc     = "Auto create → start → farm → repeat",
+    Desc     = "Auto farm Invasion",
     Type     = "Checkbox",
     Value    = Options.AutoInvasion or false,
     Callback = function(v)
