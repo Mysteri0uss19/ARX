@@ -104,6 +104,7 @@ local Options = {
     -- Invasion
     AutoInvasion         = false,
     AutoJoinInvasion     = false,
+    AutoAcceptInvasion   = false,   -- [NEW] Auto Accept Invasion
     AutoInvasionCard     = false,
     InvasionCardPriority = {},
     InvasionTeamSlot     = "1",
@@ -174,59 +175,59 @@ local Remote = {
                       or RemoContainer:FindFirstChild("gauntlet.displayCards"),
     InvasionVote       = RemoContainer:FindFirstChild("invasions.voteCard")
                       or RemoContainer:FindFirstChild("gauntlet.voteCard"),
-    InvasionReplay = RemoContainer:FindFirstChild("invasions.replay"),
-
+    InvasionReplay     = RemoContainer:FindFirstChild("invasions.replay"),
 }
 
 -- ============================================================
 --  STATE
 -- ============================================================
 local State = {
-    isAutoFarm          = false,
-    isAutoSnipeBoss     = false,
-    isAutoEgg           = false,
-    isDoingEgg          = false,
-    isAutoWeapon        = false,
-    isAutoEquip         = false,
-    isAutoQuest         = false,
-    lastFarmCFrame      = nil,
-    savedFarmCFrame     = nil,
-    preGauntletCFrame   = nil,
-    isGauntletFarm      = false,
-    isGauntletAutoCard  = false,
-    isGauntletAutoLeave = false,
-    isCardSelecting     = false,
-    pauseForGauntlet    = false,
-    gauntletRunning     = false,
-    gauntletMaxFloor    = Options.GauntletMaxFloor or 6,
-    cardPriorityList    = Options.CardPriorityList or {},
-    isFollowingCart     = false,
-    isAutoEscortStart   = Options.AutoEscortStart  or false,
-    isAutoEscortReplay  = Options.AutoEscortReplay or false,
-    isAutoEscortAccept  = Options.AutoEscortAccept or false,
-    isAutoJoinEscort    = Options.AutoJoinEscort   or false,
-    isAutoRaidEnabled   = Options.AutoRaid or false,
-    isQueueRunning      = false,
-    isAutoInfiltration  = Options.AutoInfiltration or false,
-    selectedEnemyNames  = Options.SelectedEnemyNames or {},
-    selectedBossNames   = Options.SelectedBossNames  or {},
-    selectedEggName     = Options.SelectedEggName    or "Nemak",
-    selectedQuestId     = Options.SelectedQuestId    or "",
-    selectedEscortMap   = Options.SelectedEscortMap  or "Journeys End",
-    selectedReplayTier  = Options.ReplayTier         or "Tier 1 - Common",
-    selectedInfiltName  = Options.InfiltName         or "Rain Village",
-    selectedInfiltPath  = Options.InfiltPath         or "I",
-    gauntletTeamSlot    = Options.GauntletTeamSlot or "1",
-    raidTeamSlot        = Options.RaidTeamSlot     or "1",
-    infiltTeamSlot      = Options.InfiltTeamSlot   or "1",
+    isAutoFarm           = false,
+    isAutoSnipeBoss      = false,
+    isAutoEgg            = false,
+    isDoingEgg           = false,
+    isAutoWeapon         = false,
+    isAutoEquip          = false,
+    isAutoQuest          = false,
+    lastFarmCFrame       = nil,
+    savedFarmCFrame      = nil,
+    preGauntletCFrame    = nil,
+    isGauntletFarm       = false,
+    isGauntletAutoCard   = false,
+    isGauntletAutoLeave  = false,
+    isCardSelecting      = false,
+    pauseForGauntlet     = false,
+    gauntletRunning      = false,
+    gauntletMaxFloor     = Options.GauntletMaxFloor or 6,
+    cardPriorityList     = Options.CardPriorityList or {},
+    isFollowingCart      = false,
+    isAutoEscortStart    = Options.AutoEscortStart  or false,
+    isAutoEscortReplay   = Options.AutoEscortReplay or false,
+    isAutoEscortAccept   = Options.AutoEscortAccept or false,
+    isAutoJoinEscort     = Options.AutoJoinEscort   or false,
+    isAutoRaidEnabled    = Options.AutoRaid or false,
+    isQueueRunning       = false,
+    isAutoInfiltration   = Options.AutoInfiltration or false,
+    selectedEnemyNames   = Options.SelectedEnemyNames or {},
+    selectedBossNames    = Options.SelectedBossNames  or {},
+    selectedEggName      = Options.SelectedEggName    or "Nemak",
+    selectedQuestId      = Options.SelectedQuestId    or "",
+    selectedEscortMap    = Options.SelectedEscortMap  or "Journeys End",
+    selectedReplayTier   = Options.ReplayTier         or "Tier 1 - Common",
+    selectedInfiltName   = Options.InfiltName         or "Rain Village",
+    selectedInfiltPath   = Options.InfiltPath         or "I",
+    gauntletTeamSlot     = Options.GauntletTeamSlot or "1",
+    raidTeamSlot         = Options.RaidTeamSlot     or "1",
+    infiltTeamSlot       = Options.InfiltTeamSlot   or "1",
     -- Invasion
-    isAutoInvasion       = Options.AutoInvasion      or false,
-    isAutoJoinInvasion   = Options.AutoJoinInvasion  or false,
-    isAutoInvasionCard   = Options.AutoInvasionCard  or false,
-    invasionCardPriority = Options.InvasionCardPriority or {},
-    invasionTeamSlot     = Options.InvasionTeamSlot  or "1",
-    isInvasionCardSel    = false,
-    isAutoInvasionReplay = Options.AutoInvasionReplay or false,
+    isAutoInvasion        = Options.AutoInvasion      or false,
+    isAutoJoinInvasion    = Options.AutoJoinInvasion  or false,
+    isAutoAcceptInvasion  = Options.AutoAcceptInvasion or false,  -- [NEW]
+    isAutoInvasionCard    = Options.AutoInvasionCard  or false,
+    invasionCardPriority  = Options.InvasionCardPriority or {},
+    invasionTeamSlot      = Options.InvasionTeamSlot  or "1",
+    isInvasionCardSel     = false,
+    isAutoInvasionReplay  = Options.AutoInvasionReplay or false,
     isStandingBarricade   = Options.AutoStandBarricade or false,
 }
 
@@ -234,17 +235,18 @@ local State = {
 --  THREADS
 -- ============================================================
 local Thread = {
-    cartFollow    = nil,
-    escortStart   = nil,
-    escortReplay  = nil,
-    escortAccept  = nil,
-    escortJoin    = nil,
-    queueRunner   = nil,
-    infiltration  = nil,
-    invasion      = nil,
-    invasionJoin  = nil,
-    invasionReplay = nil,
-    standBarricade = nil,
+    cartFollow      = nil,
+    escortStart     = nil,
+    escortReplay    = nil,
+    escortAccept    = nil,
+    escortJoin      = nil,
+    queueRunner     = nil,
+    infiltration    = nil,
+    invasion        = nil,
+    invasionJoin    = nil,
+    invasionAccept  = nil,   -- [NEW]
+    invasionReplay  = nil,
+    standBarricade  = nil,
 }
 
 -- ============================================================
@@ -407,6 +409,36 @@ local function stopAutoInvasionReplay()
         Thread.invasionReplay = nil
     end
 end
+
+-- ============================================================
+--  AUTO ACCEPT INVASION  [NEW]
+-- ============================================================
+local function startAutoAcceptInvasion()
+    if Thread.invasionAccept then
+        pcall(function() task.cancel(Thread.invasionAccept) end)
+        Thread.invasionAccept = nil
+    end
+    Thread.invasionAccept = task.spawn(function()
+        while State.isAutoAcceptInvasion and isRunning() do
+            local btn = findJoinButton()
+            if btn then
+                clickObject(btn)
+                task.wait(2)
+            else
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+local function stopAutoAcceptInvasion()
+    State.isAutoAcceptInvasion = false
+    if Thread.invasionAccept then
+        pcall(function() task.cancel(Thread.invasionAccept) end)
+        Thread.invasionAccept = nil
+    end
+end
+
 -- ============================================================
 --  POSITION HELPERS
 -- ============================================================
@@ -1638,15 +1670,10 @@ local function isInInvasion()
     return false
 end
 
--- ============================================================
---  isInvasionVictoryVisible
---  กรอง WindUI notification ออก ป้องกัน false positive
--- ============================================================
 local function isInvasionVictoryVisible()
     for _, rg in ipairs({PlayerGui, Svc.CoreGui}) do
         for _, g in ipairs(rg:GetDescendants()) do
             if (g:IsA("TextLabel") or g:IsA("TextButton")) and g.Visible and isGuiActuallyVisible(g) then
-                -- ข้าม WindUI notification ScreenGui
                 local parentGui = g:FindFirstAncestorOfClass("ScreenGui")
                 if parentGui and (parentGui.Name:find("Wind") or parentGui.Name:find("wind")) then
                     continue
@@ -1673,6 +1700,7 @@ local function pickBestInvasionCard(available)
     end
     return available[1] and available[1].fullName or nil
 end
+
 local function doInvasionCardSelection()
     if State.isInvasionCardSel then return end
     State.isInvasionCardSel = true
@@ -1771,9 +1799,6 @@ local function doInvasionCardSelection()
     State.isInvasionCardSel = false
 end
 
--- ============================================================
---  getInvasionMainBaseCFrame
--- ============================================================
 local function getInvasionMainBaseCFrame()
     local map = WS:FindFirstChild("World") and WS.World:FindFirstChild("Map")
     if not map then return nil end
@@ -1782,19 +1807,13 @@ local function getInvasionMainBaseCFrame()
             local turret = child:FindFirstChild("Barricade", true)
             if turret then
                 local cf = getInstanceCFrame(turret)
-                if cf then
-                    return cf * CFrame.new(0, 0, 0)
-                end
+                if cf then return cf * CFrame.new(0, 0, 0) end
             end
         end
     end
     return nil
 end
 
--- ============================================================
---  AUTO STAND AT BARRICADE
---  ล็อกตำแหน่งผู้เล่นไว้ที่ Barricade ตลอด ไม่สนใจตำแหน่งมอน
--- ============================================================
 local function startStandAtBarricade()
     if Thread.standBarricade then
         pcall(function() task.cancel(Thread.standBarricade) end)
@@ -1814,10 +1833,7 @@ local function startStandAtBarricade()
                 end
                 if not notified then
                     notified = true
-                    WindUI:Notify({
-                        Title    = "[Invasion] Standing at Barricade",
-                        Duration = 3,
-                    })
+                    WindUI:Notify({Title="[Invasion] Standing at Barricade", Duration=3})
                 end
             else
                 notified = false
@@ -1834,7 +1850,6 @@ local function stopStandAtBarricade()
         Thread.standBarricade = nil
     end
 end
-
 
 local function farmInvasionEnemies(isActiveFunc)
     local lastATick   = 0
@@ -1924,7 +1939,6 @@ local function runOneInvasionRound(isActiveFunc)
         return
     end
 
-
     local roundStart = tick()
     farmInvasionEnemies(function()
         return isActiveFunc()
@@ -1934,7 +1948,6 @@ local function runOneInvasionRound(isActiveFunc)
 
     if isInvasionVictoryVisible() then
         task.wait(5)
-    else
     end
     task.wait(3)
 end
@@ -2612,7 +2625,7 @@ local Window = WindUI:CreateWindow({
 })
 getgenv().GhostHubAW3_Window = Window
 Window:Tag({Title="Beta",    Icon="badge-alert", Color=Color3.fromHex("#0011ff"), Radius=6})
-Window:Tag({Title="v.0.3.2", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
+Window:Tag({Title="v.0.3.3", Icon="",            Color=Color3.fromHex("#30ff6a"), Radius=6})
 Window:SetToggleKey(Enum.KeyCode[Options.ToggleUIKey] or Enum.KeyCode.LeftControl)
 
 -- ============================================================
@@ -3016,7 +3029,6 @@ Tab.Invasion:Toggle({
                     task.wait(5)
                 end
             end)
-        else
         end
     end
 })
@@ -3032,6 +3044,27 @@ Tab.Invasion:Toggle({
         Options.AutoJoinInvasion = v
         SaveConfig()
         if v then startAutoJoinInvasion() else stopAutoJoinInvasion() end
+    end
+})
+
+-- [NEW] Auto Accept Invasion Toggle
+Tab.Invasion:Toggle({
+    Title    = "Auto Accept Invasion",
+    Icon     = "check-square",
+    Desc     = "Auto click Join/Accept button in Invasion lobby",
+    Type     = "Checkbox",
+    Value    = Options.AutoAcceptInvasion or false,
+    Callback = function(v)
+        State.isAutoAcceptInvasion = v
+        Options.AutoAcceptInvasion = v
+        SaveConfig()
+        if v then
+            startAutoAcceptInvasion()
+            WindUI:Notify({Title="[Invasion] Auto Accept ON", Content="Clicking Join button automatically.", Duration=3})
+        else
+            stopAutoAcceptInvasion()
+            WindUI:Notify({Title="[Invasion] Auto Accept OFF", Content="Stopped.", Duration=3})
+        end
     end
 })
 
@@ -3062,14 +3095,10 @@ Tab.Invasion:Toggle({
     Type     = "Checkbox",
     Value    = Options.AutoStandBarricade or false,
     Callback = function(v)
-        State.isStandingBarricade = v
+        State.isStandingBarricade  = v
         Options.AutoStandBarricade = v
         SaveConfig()
-        if v then
-            startStandAtBarricade()
-        else
-            stopStandAtBarricade()
-        end
+        if v then startStandAtBarricade() else stopStandAtBarricade() end
     end
 })
 
@@ -3427,7 +3456,7 @@ Tab.Summon:Divider()
 Tab.Summon:Button({
     Title    = "Save Position",
     Icon     = "map-pin",
-    Desc     = "บันทึก position เป็น farm base",
+    Desc     = "",
     Callback = function()
         local char = player.Character
         local hrp  = char and char:FindFirstChild("HumanoidRootPart")
