@@ -110,6 +110,7 @@ local Options = {
     InvasionTeamSlot     = "1",
     AutoInvasionReplay   = false,
     AutoStandBarricade   = false,
+    AutoDigSummer = false,
 }
 
 local function SaveConfig()
@@ -176,6 +177,7 @@ local Remote = {
     InvasionVote       = RemoContainer:FindFirstChild("invasions.voteCard")
                       or RemoContainer:FindFirstChild("gauntlet.voteCard"),
     InvasionReplay     = RemoContainer:FindFirstChild("invasions.replay"),
+    TreasureHuntDig = RemoContainer:FindFirstChild("treasureHunt.dig"),
 }
 
 -- ============================================================
@@ -229,6 +231,8 @@ local State = {
     isInvasionCardSel     = false,
     isAutoInvasionReplay  = Options.AutoInvasionReplay or false,
     isStandingBarricade   = Options.AutoStandBarricade or false,
+    isAutoDigSummer = Options.AutoDigSummer or false,
+
 }
 
 -- ============================================================
@@ -244,9 +248,10 @@ local Thread = {
     infiltration    = nil,
     invasion        = nil,
     invasionJoin    = nil,
-    invasionAccept  = nil,   -- [NEW]
+    invasionAccept  = nil,   
     invasionReplay  = nil,
     standBarricade  = nil,
+    digSummer = nil,
 }
 
 -- ============================================================
@@ -438,7 +443,33 @@ local function stopAutoAcceptInvasion()
         Thread.invasionAccept = nil
     end
 end
+local function startAutoDigSummer()
+    if Thread.digSummer then
+        pcall(function() task.cancel(Thread.digSummer) end)
+        Thread.digSummer = nil
+    end
+    Thread.digSummer = task.spawn(function()
+        local slot = 1
+        while State.isAutoDigSummer and isRunning() do
+            pcall(function()
+                if Remote.TreasureHuntDig then
+                    Remote.TreasureHuntDig:InvokeServer(slot)
+                end
+            end)
+            slot += 1
+            if slot > 49 then slot = 1 end
+            task.wait(0.5)
+        end
+    end)
+end
 
+local function stopAutoDigSummer()
+    State.isAutoDigSummer = false
+    if Thread.digSummer then
+        pcall(function() task.cancel(Thread.digSummer) end)
+        Thread.digSummer = nil
+    end
+end
 -- ============================================================
 --  POSITION HELPERS
 -- ============================================================
@@ -1247,22 +1278,18 @@ local function runSingleRaid(raidName, isActiveFunc)
 
     while isActiveFunc() do
         if State.pauseForGauntlet then
-            WindUI:Notify({Title=string.format("[%s] Paused",raidName), Content="Gauntlet priority!", Duration=3})
             break
         end
         if isRaidContinueVisible() then
-            WindUI:Notify({Title=string.format("[%s] Victory!",raidName), Content="Raid complete!", Duration=3})
             break
         end
         if tick()-raidStart > 900 then
-            WindUI:Notify({Title=string.format("[%s] Timed Out",raidName), Content="15 min limit.", Duration=4})
             break
         end
         local target, tType = pickRaidTarget(raidName)
         if not target then
             noETimer += 0.3
             if noETimer >= 5 then
-                WindUI:Notify({Title=string.format("[%s] Complete!",raidName), Content="All cleared!", Duration=4})
                 break
             end
             task.wait(0.3) continue
@@ -1271,7 +1298,6 @@ local function runSingleRaid(raidName, isActiveFunc)
         if tType ~= lastPhase then
             lastPhase = tType
             local msgs = {light="Clearing light...", tank="Attacking tank...", boss="Engaging boss!"}
-            WindUI:Notify({Title=string.format("[%s] Phase: %s",raidName,tType:upper()), Content=msgs[tType] or "", Duration=3})
         end
         local timeout   = tType=="light" and 5 or tType=="tank" and 8 or 20
         local tStart    = tick()
@@ -1418,9 +1444,7 @@ local function startQueueRunner()
             if not State.isAutoRaidEnabled then State.isQueueRunning=false Thread.queueRunner=nil return end
             if #getActiveRaids() == 0 then State.isQueueRunning=false Thread.queueRunner=nil return end
             if State.pauseForGauntlet then
-                WindUI:Notify({Title="Raid Queue Paused", Content="Waiting for Gauntlet...", Duration=4})
                 while State.pauseForGauntlet do task.wait(1) end
-                WindUI:Notify({Title="Raid Queue Resumed", Content="Gauntlet done!", Duration=3})
             end
             local raidName, waitSec = pickNextRaid()
             if not raidName then task.wait(5) continue end
@@ -2274,7 +2298,6 @@ local function attackNearestEnemyOnce()
 end
 
 local function runOneGauntletRound()
-    WindUI:Notify({Title="Gauntlet", Content="Loading team...", Duration=2})
     loadTeam(State.gauntletTeamSlot) task.wait(1)
     loadTeam(State.gauntletTeamSlot) task.wait(2)
     pcall(function() Remote.GauntletCreate:InvokeServer("Normal", {friendsOnly=false}) end)
@@ -2814,6 +2837,23 @@ Tab.Event:Toggle({
     end
 })
 
+Tab.Event:Toggle({
+    Title    = "Auto Dig Summer",
+    Icon     = "shovel",
+    Desc     = "",
+    Type     = "Checkbox",
+    Value    = Options.AutoDigSummer or false,
+    Callback = function(v)
+        State.isAutoDigSummer = v
+        Options.AutoDigSummer = v
+        SaveConfig()
+        if v then
+            startAutoDigSummer()
+        else
+            stopAutoDigSummer()
+        end
+    end
+})
 Tab.Event:Divider()
 Tab.Event:Section({Title="Create Escort"})
 
@@ -3060,10 +3100,8 @@ Tab.Invasion:Toggle({
         SaveConfig()
         if v then
             startAutoAcceptInvasion()
-            WindUI:Notify({Title="[Invasion] Auto Accept ON", Content="Clicking Join button automatically.", Duration=3})
         else
             stopAutoAcceptInvasion()
-            WindUI:Notify({Title="[Invasion] Auto Accept OFF", Content="Stopped.", Duration=3})
         end
     end
 })
@@ -3080,10 +3118,8 @@ Tab.Invasion:Toggle({
         SaveConfig()
         if v then
             startAutoInvasionReplay()
-            WindUI:Notify({Title="[Invasion] Auto Replay ON", Content="Replaying every 20s", Duration=3})
         else
             stopAutoInvasionReplay()
-            WindUI:Notify({Title="[Invasion] Auto Replay OFF", Content="Stopped.", Duration=3})
         end
     end
 })
@@ -3114,10 +3150,8 @@ Tab.Invasion:Toggle({
         if v then
             State.isAutoInvasion = true
             startInvasionLoop()
-            WindUI:Notify({Title="[Invasion] Auto ON", Content="Dark Matter Invasion auto started!", Duration=4})
         else
             stopInvasionLoop()
-            WindUI:Notify({Title="[Invasion] Auto OFF", Content="Stopped.", Duration=3})
         end
     end
 })
@@ -3298,9 +3332,7 @@ Tab.Gauntlet:Toggle({
     Callback = function(v)
         State.isGauntletFarm = v Options.AutoGauntlet = v SaveConfig()
         if v then
-            WindUI:Notify({Title="Gauntlet Scheduler ON", Content="Enters at xx:00 every hour.", Duration=5})
         else
-            WindUI:Notify({Title="Gauntlet Scheduler OFF", Content="Disabled.", Duration=3})
             if State.pauseForGauntlet then
                 State.pauseForGauntlet = false
                 State.gauntletRunning  = false
